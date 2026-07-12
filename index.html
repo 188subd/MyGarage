@@ -531,8 +531,7 @@ async function loadData(){
     return;
   }
   try{
-    // 用 JSONP 讀取,繞過瀏覽器對 Apps Script 的 CORS 限制
-    const json = await jsonpGet(API_URL + '?action=all');
+    const json = await frameGet(API_URL + '?action=all');
     if (!json.ok) throw new Error(json.error || '後端回傳錯誤');
     DB = { vehicles: json.vehicles||[], fuel: json.fuel||[], maint: json.maint||[] };
     afterLoad();
@@ -542,20 +541,25 @@ async function loadData(){
   }
 }
 
-/* JSONP 讀取:動態插入 <script> 標籤,Google 允許這種跨網域載入 */
-/* 已針對 iPhone Safari 加強:明確指定 script type 並插入 <head> */
-function jsonpGet(url){
+/* iframe + postMessage 讀取:iOS「防止跨網站追蹤」不會擋這種方式,
+   iPhone / iPad / 電腦全部相容 */
+function frameGet(url){
   return new Promise((resolve, reject)=>{
-    const cb = 'jsonp_' + Date.now() + '_' + Math.floor(Math.random()*100000);
-    const s = document.createElement('script');
+    const token = 'f' + Date.now() + '_' + Math.floor(Math.random()*100000);
+    const iframe = document.createElement('iframe');
+    iframe.style.display = 'none';
     const timer = setTimeout(()=>{ cleanup(); reject(new Error('連線逾時')); }, 25000);
-    function cleanup(){ clearTimeout(timer); try{ delete window[cb]; }catch(e){ window[cb]=undefined; } if(s && s.parentNode) s.parentNode.removeChild(s); }
-    window[cb] = (data)=>{ cleanup(); resolve(data); };
-    s.type = 'text/javascript';                      // Safari 需要明確 type
-    s.async = true;
-    s.src = url + (url.indexOf('?')>=0?'&':'?') + 'callback=' + cb;
-    s.onerror = ()=>{ cleanup(); reject(new Error('無法連線後端')); };
-    (document.head || document.documentElement).appendChild(s);  // 插入 head 較穩
+    function onMsg(ev){
+      if (!ev.data || ev.data.__token !== token) return;   // 只收自己這次的回應
+      cleanup();
+      if (ev.data.ok === false && ev.data.error) reject(new Error(ev.data.error));
+      else resolve(ev.data.payload);
+    }
+    function cleanup(){ clearTimeout(timer); window.removeEventListener('message', onMsg); if(iframe.parentNode) iframe.parentNode.removeChild(iframe); }
+    window.addEventListener('message', onMsg);
+    iframe.onerror = ()=>{ cleanup(); reject(new Error('無法連線後端')); };
+    iframe.src = url + (url.indexOf('?')>=0?'&':'?') + 'mode=frame&token=' + token;
+    document.body.appendChild(iframe);
   });
 }
 function afterLoad(){
@@ -819,10 +823,10 @@ $('#v-save').addEventListener('click',async()=>{
 /* ===== 送出加油/支出(帶當前車輛 ID) ===== */
 async function post(payload){
   if(!API_URL){ toast('示範模式無法儲存,請先完成後端部署',false); return false; }
-  // 用 JSONP 送出(把資料包成網址參數),繞過 CORS
+  // 用 iframe + postMessage 送出(把資料包成網址參數),繞過 iOS 防追蹤
   const url = API_URL + '?action=' + encodeURIComponent(payload.action)
             + '&payload=' + encodeURIComponent(JSON.stringify(payload.data));
-  const json = await jsonpGet(url);
+  const json = await frameGet(url);
   if(!json.ok) throw new Error(json.error||'寫入失敗');
   return json;
 }
