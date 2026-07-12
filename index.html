@@ -531,8 +531,8 @@ async function loadData(){
     return;
   }
   try{
-    const res = await fetch(API_URL + '?action=all');
-    const json = await res.json();
+    // 用 JSONP 讀取,繞過瀏覽器對 Apps Script 的 CORS 限制
+    const json = await jsonpGet(API_URL + '?action=all');
     if (!json.ok) throw new Error(json.error || '後端回傳錯誤');
     DB = { vehicles: json.vehicles||[], fuel: json.fuel||[], maint: json.maint||[] };
     afterLoad();
@@ -540,6 +540,20 @@ async function loadData(){
     $('#loading').style.display = 'none';
     toast('讀取失敗:' + err.message, false);
   }
+}
+
+/* JSONP 讀取:動態插入 <script> 標籤,Google 允許這種跨網域載入 */
+function jsonpGet(url){
+  return new Promise((resolve, reject)=>{
+    const cb = 'jsonp_' + Date.now() + '_' + Math.floor(Math.random()*100000);
+    const timer = setTimeout(()=>{ cleanup(); reject(new Error('連線逾時')); }, 20000);
+    function cleanup(){ clearTimeout(timer); delete window[cb]; if(s.parentNode) s.parentNode.removeChild(s); }
+    window[cb] = (data)=>{ cleanup(); resolve(data); };
+    const s = document.createElement('script');
+    s.src = url + (url.indexOf('?')>=0?'&':'?') + 'callback=' + cb;
+    s.onerror = ()=>{ cleanup(); reject(new Error('無法連線後端')); };
+    document.body.appendChild(s);
+  });
 }
 function afterLoad(){
   if (!DB.vehicles.length) DB.vehicles = [{'ID':'v1','名稱':'我的車','類型':'汽車','領牌日期':'','初始里程(km)':0,'油箱容量(L)':60}];
@@ -791,10 +805,9 @@ $('#v-save').addEventListener('click',async()=>{
       DB.vehicles.push({'ID':vid,'名稱':data.name,'類型':data.type,'領牌日期':data.plateDate,'初始里程(km)':data.initOdo,'油箱容量(L)':data.tank});
       currentVid=vid; toast('✓ 已新增(示範模式,重整後消失)'); closeVehModal(); render();
     } else {
-      const res=await fetch(API_URL,{method:'POST',body:JSON.stringify({action:'addVehicle',data})});
-      const json=await res.json();
-      if(!json.ok) throw new Error(json.error||'新增失敗');
-      currentVid=json.id; toast('✓ 車輛已建立'); closeVehModal(); await loadData();
+      const json = await post({action:'addVehicle', data});
+      if(json && json.id) currentVid = json.id;
+      toast('✓ 車輛已建立'); closeVehModal(); await loadData();
     }
   }catch(err){ toast('新增失敗:'+err.message,false); }
   btn.disabled=false; btn.textContent='建立車輛';
@@ -803,10 +816,12 @@ $('#v-save').addEventListener('click',async()=>{
 /* ===== 送出加油/支出(帶當前車輛 ID) ===== */
 async function post(payload){
   if(!API_URL){ toast('示範模式無法儲存,請先完成後端部署',false); return false; }
-  const res=await fetch(API_URL,{method:'POST',body:JSON.stringify(payload)});
-  const json=await res.json();
+  // 用 JSONP 送出(把資料包成網址參數),繞過 CORS
+  const url = API_URL + '?action=' + encodeURIComponent(payload.action)
+            + '&payload=' + encodeURIComponent(JSON.stringify(payload.data));
+  const json = await jsonpGet(url);
   if(!json.ok) throw new Error(json.error||'寫入失敗');
-  return true;
+  return json;
 }
 $('#f-save').addEventListener('click',async()=>{
   const data={ date:$('#f-date').value, odo:parseFloat($('#f-odo').value), liters:parseFloat($('#f-liters').value),
