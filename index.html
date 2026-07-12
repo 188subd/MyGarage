@@ -531,7 +531,7 @@ async function loadData(){
     return;
   }
   try{
-    const json = await frameGet(API_URL + '?action=all');
+    const json = await apiGet(API_URL + '?action=all');
     if (!json.ok) throw new Error(json.error || '後端回傳錯誤');
     DB = { vehicles: json.vehicles||[], fuel: json.fuel||[], maint: json.maint||[] };
     afterLoad();
@@ -541,14 +541,19 @@ async function loadData(){
   }
 }
 
-/* iframe + postMessage 讀取:iOS「防止跨網站追蹤」不會擋這種方式,
-   iPhone / iPad / 電腦全部相容 */
+/* 雙保險讀取:先用 iframe(iOS 防追蹤不擋),失敗自動改用 JSONP(電腦已驗證可行) */
+async function apiGet(url){
+  try{ return await frameGet(url); }
+  catch(e){ return await jsonpGet(url); }
+}
+
+/* 方式一:iframe + postMessage(iPhone/iPad 相容) */
 function frameGet(url){
   return new Promise((resolve, reject)=>{
     const token = 'f' + Date.now() + '_' + Math.floor(Math.random()*100000);
     const iframe = document.createElement('iframe');
     iframe.style.display = 'none';
-    const timer = setTimeout(()=>{ cleanup(); reject(new Error('連線逾時')); }, 25000);
+    const timer = setTimeout(()=>{ cleanup(); reject(new Error('連線逾時')); }, 12000);
     function onMsg(ev){
       if (!ev.data || ev.data.__token !== token) return;   // 只收自己這次的回應
       cleanup();
@@ -560,6 +565,22 @@ function frameGet(url){
     iframe.onerror = ()=>{ cleanup(); reject(new Error('無法連線後端')); };
     iframe.src = url + (url.indexOf('?')>=0?'&':'?') + 'mode=frame&token=' + token;
     document.body.appendChild(iframe);
+  });
+}
+
+/* 方式二:JSONP(桌機瀏覽器已驗證可行,當備援) */
+function jsonpGet(url){
+  return new Promise((resolve, reject)=>{
+    const cb = 'jsonp_' + Date.now() + '_' + Math.floor(Math.random()*100000);
+    const s = document.createElement('script');
+    const timer = setTimeout(()=>{ cleanup(); reject(new Error('無法連線後端')); }, 20000);
+    function cleanup(){ clearTimeout(timer); try{ delete window[cb]; }catch(e){ window[cb]=undefined; } if(s.parentNode) s.parentNode.removeChild(s); }
+    window[cb] = (data)=>{ cleanup(); resolve(data); };
+    s.type = 'text/javascript';
+    s.async = true;
+    s.src = url + (url.indexOf('?')>=0?'&':'?') + 'callback=' + cb;
+    s.onerror = ()=>{ cleanup(); reject(new Error('無法連線後端')); };
+    (document.head || document.documentElement).appendChild(s);
   });
 }
 function afterLoad(){
@@ -823,10 +844,13 @@ $('#v-save').addEventListener('click',async()=>{
 /* ===== 送出加油/支出(帶當前車輛 ID) ===== */
 async function post(payload){
   if(!API_URL){ toast('示範模式無法儲存,請先完成後端部署',false); return false; }
-  // 用 iframe + postMessage 送出(把資料包成網址參數),繞過 iOS 防追蹤
+  // 資料包成網址參數送出,走雙保險通道;
+  // reqId 是唯一編號,就算備援重送,後端也只會記一筆(防重複)
+  const reqId = 'r' + Date.now() + '_' + Math.floor(Math.random()*1000000);
   const url = API_URL + '?action=' + encodeURIComponent(payload.action)
-            + '&payload=' + encodeURIComponent(JSON.stringify(payload.data));
-  const json = await frameGet(url);
+            + '&payload=' + encodeURIComponent(JSON.stringify(payload.data))
+            + '&reqId=' + reqId;
+  const json = await apiGet(url);
   if(!json.ok) throw new Error(json.error||'寫入失敗');
   return json;
 }
