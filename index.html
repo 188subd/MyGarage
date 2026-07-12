@@ -541,13 +541,28 @@ async function loadData(){
   }
 }
 
-/* 雙保險讀取:先用 iframe(iOS 防追蹤不擋),失敗自動改用 JSONP(電腦已驗證可行) */
+/* 三通道自動容錯:fetch(Safari/Edge 可用)→ iframe → JSONP(桌機備援)
+   哪一條通就走哪一條,涵蓋 iPhone/iPad/Edge/Brave 全部瀏覽器 */
 async function apiGet(url){
-  try{ return await frameGet(url); }
-  catch(e){ return await jsonpGet(url); }
+  try{ return await fetchGet(url); }
+  catch(e1){
+    try{ return await frameGet(url); }
+    catch(e2){ return await jsonpGet(url); }
+  }
 }
 
-/* 方式一:iframe + postMessage(iPhone/iPad 相容) */
+/* 方式一:標準 fetch(iPhone/iPad Safari、Edge 皆可用) */
+async function fetchGet(url){
+  const controller = new AbortController();
+  const timer = setTimeout(()=>controller.abort(), 12000);
+  try{
+    const res = await fetch(url, { method:'GET', redirect:'follow', signal:controller.signal });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    return await res.json();
+  } finally { clearTimeout(timer); }
+}
+
+/* 方式二:iframe + postMessage */
 function frameGet(url){
   return new Promise((resolve, reject)=>{
     const token = 'f' + Date.now() + '_' + Math.floor(Math.random()*100000);
