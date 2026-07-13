@@ -489,8 +489,8 @@ nav button.on .nico{background:var(--grad);-webkit-background-clip:text;backgrou
    把 Apps Script 部署後的網址貼在引號中間。留空 = 示範模式。
 ============================================================ */
 const APP_VERSION = 'v2.5.0';
-const API_URL = "";  // Apps Script /exec 網址
-const API_PROXY_URL = ""; // 建議填 Cloudflare Worker 網址；留空時直接連 Apps Script
+const API_URL = "https://script.google.com/macros/s/AKfycbw4TN9_LXJt2sq_kcTwmEg0OPFyF8jquhanquUt-_uOQ6Ea0BxJenjVCgLYIhJAOCSKkA/exec";  // Apps Script /exec 網址
+const API_PROXY_URL = "https://mygarage-api.188rex.workers.dev/"; // 建議填 Cloudflare Worker 網址；留空時直接連 Apps Script
 const DEBUG_MODE = new URLSearchParams(location.search).get('debug') === '1';
 
 /* ===== 類別設定 ===== */
