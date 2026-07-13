@@ -1,994 +1,400 @@
-<!DOCTYPE html>
-<html lang="zh-Hant">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<title>愛車紀錄</title>
+/**
+ * ============================================================
+ * 愛車紀錄 — Google Apps Script 後端 v2.5.0
+ *
+ * 新增：
+ * - 每筆加油／支出紀錄唯一 ID
+ * - 更新時間與狀態欄位
+ * - 撤銷上一筆新增（軟刪除，不真的刪除試算表列）
+ * - 舊資料自動補齊 ID／狀態，不需手動改工作表
+ * - 保留 JSON、JSONP、iframe 與 Cloudflare Worker 相容
+ * ============================================================
+ */
 
-<meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="mobile-web-app-capable" content="yes">
-<meta name="theme-color" content="#07090F">
+var SHEET_FUEL     = '加油紀錄';
+var SHEET_MAINT    = '保養維修';
+var SHEET_SETTINGS = '設定';
+var SHEET_VEHICLES = '車輛';
 
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
-
-<style>
-:root{
-  --bg:#07090F; --panel:#0D1120; --card:#111729; --card-hi:#161D33;
-  --line:rgba(255,255,255,.07); --text:#EEF1F8; --muted:#8A93A8; --dim:#5A6378;
-  --pink:#FF2D6F; --purple:#8B3DFF; --blue:#2D8CFF; --green:#2DE0A5;
-  --grad:linear-gradient(90deg,var(--pink),var(--purple),var(--blue));
-  --num:'Chakra Petch',monospace; --body:'Noto Sans TC',sans-serif; --radius:18px;
-}
-*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-html{background:var(--bg)}
-body{font-family:var(--body);color:var(--text);background:var(--bg);min-height:100dvh}
-body::before{
-  content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
-  background:
-    radial-gradient(60% 40% at 85% -5%, rgba(139,61,255,.14), transparent 70%),
-    radial-gradient(50% 35% at 10% 105%, rgba(255,45,111,.10), transparent 70%);
-}
-#app{position:relative;z-index:1;max-width:470px;margin:0 auto;padding:20px 18px calc(88px + env(safe-area-inset-bottom))}
-
-/* ===== 平板/桌機:放寬容器,統計卡多欄,圖表並排 ===== */
-@media (min-width:700px){
-  #app{max-width:860px;padding-left:26px;padding-right:26px}
-  .stat-grid{grid-template-columns:repeat(4,1fr)}
-  .dash-2col{display:grid;grid-template-columns:1fr 1fr;gap:14px}
-  .dash-2col .card{margin-bottom:0}
-  .gauge-card{grid-column:1 / -1}
-  nav .inner,nav{max-width:none}
-  nav .inner{max-width:860px}
-}
-
-/* ===== 頂部 + 車輛切換 ===== */
-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;position:relative}
-.brand small{display:block;color:var(--muted);font-size:12px;letter-spacing:.14em;text-transform:uppercase}
-.car-switch{display:flex;align-items:center;gap:8px;cursor:pointer;background:none;border:none;color:var(--text);font-family:var(--body);padding:2px 0}
-.car-switch h1{font-size:22px;font-weight:700;letter-spacing:.02em}
-.car-switch .caret{color:var(--muted);font-size:13px;transition:transform .25s}
-.car-switch.open .caret{transform:rotate(180deg)}
-.odo-pill{
-  font-family:var(--num);font-size:13px;color:var(--text);
-  background:var(--card);border:1px solid var(--line);border-radius:999px;
-  padding:8px 14px;display:flex;align-items:center;gap:7px;
-}
-.odo-pill .dot{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 8px var(--green)}
-
-/* 車庫下拉面板 */
-.garage{
-  position:absolute;top:52px;left:0;right:0;z-index:30;
-  background:var(--card-hi);border:1px solid var(--line);border-radius:16px;
-  box-shadow:0 18px 50px rgba(0,0,0,.6);padding:8px;display:none;animation:fadeUp .2s ease;
-}
-.garage.show{display:block}
-.garage .gitem{
-  display:flex;align-items:center;gap:12px;padding:12px 14px;border-radius:12px;cursor:pointer;
-}
-.garage .gitem:hover{background:var(--card)}
-.garage .gitem.on{background:var(--panel)}
-.garage .gitem .gic{font-size:20px;width:34px;text-align:center;flex:none}
-.garage .gitem .gmid{flex:1;min-width:0}
-.garage .gitem .gname{font-size:15px;font-weight:500}
-.garage .gitem .gsub{font-size:11.5px;color:var(--dim);font-family:var(--num);margin-top:2px}
-.garage .gitem .gchk{color:var(--green);font-size:15px}
-.garage .gadd{
-  display:flex;align-items:center;gap:10px;padding:13px 14px;margin-top:4px;
-  border-top:1px solid var(--line);color:var(--purple);font-weight:600;font-size:14px;cursor:pointer;border-radius:0 0 12px 12px;
-}
-.garage .gadd:hover{background:var(--card)}
-
-.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:18px;margin-bottom:14px}
-.card h3{font-size:13px;font-weight:500;color:var(--muted);letter-spacing:.08em;margin-bottom:12px}
-.card h3 em{font-style:normal;color:var(--dim);font-size:11.5px;letter-spacing:0;margin-left:6px}
-
-/* 車齡 */
-.age-card{display:flex;align-items:center;gap:16px;
-  background:linear-gradient(120deg,var(--card-hi),var(--card));
-  border:1px solid var(--line);border-radius:var(--radius);padding:16px 18px;margin-bottom:14px}
-.age-ring{position:relative;width:56px;height:56px;flex:none}
-.age-ring svg{width:100%;height:100%;transform:rotate(-90deg)}
-.age-ring .bg{fill:none;stroke:rgba(255,255,255,.09);stroke-width:5}
-.age-ring .fg{fill:none;stroke:url(#ageGrad);stroke-width:5;stroke-linecap:round;transition:stroke-dasharray 1s cubic-bezier(.22,1,.36,1)}
-.age-ring .yr{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-family:var(--num);font-size:17px;font-weight:700}
-.age-body{flex:1;min-width:0}
-.age-body .big{font-size:17px;font-weight:700}
-.age-body .big b{font-family:var(--num);font-size:22px;background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent;margin:0 2px}
-.age-body .sub{font-size:12px;color:var(--dim);margin-top:4px;font-family:var(--num)}
-
-/* 儀表環 */
-.gauge-card{display:flex;flex-direction:column;align-items:center;padding:26px 18px 20px;
-  background:linear-gradient(180deg,var(--card-hi),var(--card));position:relative;overflow:hidden}
-.gauge-wrap{position:relative;width:230px;height:230px}
-.gauge-wrap svg{width:100%;height:100%;transform:rotate(135deg)}
-.gauge-track{fill:none;stroke:rgba(255,255,255,.08);stroke-width:14;stroke-linecap:round}
-.gauge-bar{fill:none;stroke:url(#gaugeGrad);stroke-width:14;stroke-linecap:round;
-  filter:drop-shadow(0 0 10px rgba(139,61,255,.55));transition:stroke-dasharray 1.2s cubic-bezier(.22,1,.36,1)}
-.gauge-center{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center}
-.gauge-center .val{font-family:var(--num);font-size:52px;font-weight:700;line-height:1;background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent}
-.gauge-center .unit{font-family:var(--num);font-size:14px;color:var(--muted);margin-top:6px}
-.gauge-center .label{font-size:12px;color:var(--dim);margin-top:4px;letter-spacing:.12em}
-.gauge-foot{display:flex;gap:26px;margin-top:2px}
-.gauge-foot div{text-align:center}
-.gauge-foot .k{font-family:var(--num);font-size:17px;font-weight:600}
-.gauge-foot .t{font-size:11px;color:var(--dim);margin-top:2px}
-
-.stat-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px}
-.stat{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:16px 16px 14px}
-.stat .v{font-family:var(--num);font-size:24px;font-weight:600;line-height:1.15}
-.stat .t{font-size:12px;color:var(--muted);margin-top:5px}
-.stat.accent .v{color:var(--green)}
-
-.chart-box{position:relative;height:200px}
-.chart-box.tall{height:250px}
-.legend{display:flex;flex-wrap:wrap;gap:8px 14px;margin-top:14px}
-.legend span{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)}
-.legend i{width:9px;height:9px;border-radius:2px;display:block;flex:none}
-.legend b{font-family:var(--num);color:var(--text);font-weight:600}
-
-.form-title{font-size:19px;font-weight:700;margin:4px 0 16px}
-.field{margin-bottom:13px}
-.field label{display:block;font-size:12.5px;color:var(--muted);margin-bottom:6px}
-.field input,.field select{
-  width:100%;background:var(--panel);border:1px solid var(--line);border-radius:12px;
-  color:var(--text);font-family:var(--body);font-size:16px;padding:13px 14px;outline:none;
-  transition:border-color .2s, box-shadow .2s;
-}
-.field input:focus,.field select:focus{border-color:var(--purple);box-shadow:0 0 0 3px rgba(139,61,255,.18)}
-.field input[type=number]{font-family:var(--num)}
-.hint{font-size:11.5px;color:var(--dim);margin-top:5px;line-height:1.5}
-.row2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-.switch-row{display:flex;align-items:center;justify-content:space-between;
-  background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:13px 14px;margin-bottom:13px}
-.switch-row span{font-size:15px}
-.switch{position:relative;width:50px;height:28px;flex:none}
-.switch input{opacity:0;width:0;height:0}
-.slider{position:absolute;inset:0;border-radius:999px;background:#2A3147;transition:.25s;cursor:pointer}
-.slider::before{content:'';position:absolute;left:3px;top:3px;width:22px;height:22px;border-radius:50%;background:#fff;transition:.25s}
-.switch input:checked + .slider{background:var(--grad)}
-.switch input:checked + .slider::before{transform:translateX(22px)}
-.btn{width:100%;border:none;border-radius:14px;padding:15px;margin-top:6px;
-  font-family:var(--body);font-size:16px;font-weight:700;color:#fff;cursor:pointer;
-  background:var(--grad);box-shadow:0 6px 22px rgba(139,61,255,.35);transition:opacity .2s}
-.btn:disabled{opacity:.45;cursor:not-allowed}
-.btn.ghost{background:none;border:1px solid var(--line);color:var(--muted);box-shadow:none;font-weight:500}
-
-.seg{display:flex;gap:8px;margin-bottom:13px}
-.seg button{flex:1;padding:12px;border-radius:12px;border:1px solid var(--line);background:var(--panel);
-  color:var(--muted);font-family:var(--body);font-size:15px;cursor:pointer}
-.seg button.on{background:var(--grad);color:#fff;border-color:transparent;font-weight:700}
-
-.chips{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap}
-.chip{border:1px solid var(--line);background:var(--card);color:var(--muted);
-  border-radius:999px;padding:8px 16px;font-size:13.5px;cursor:pointer;font-family:var(--body)}
-.chip.on{background:var(--grad);color:#fff;border-color:transparent;font-weight:700}
-.rec{display:flex;align-items:center;gap:13px;background:var(--card);border:1px solid var(--line);
-  border-radius:16px;padding:14px 15px;margin-bottom:10px}
-.rec .ico{width:42px;height:42px;flex:none;border-radius:12px;display:flex;align-items:center;justify-content:center;
-  font-size:19px;background:var(--panel);border:1px solid var(--line)}
-.rec .mid{flex:1;min-width:0}
-.rec .mid .l1{font-size:15px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.rec .mid .l2{font-size:12px;color:var(--dim);margin-top:3px;font-family:var(--num)}
-.rec .end{text-align:right;flex:none}
-.rec .end .amt{font-family:var(--num);font-size:16px;font-weight:600}
-.rec .end .kmpl{font-size:11px;margin-top:3px;color:var(--green);font-family:var(--num)}
-
-nav{position:fixed;left:0;right:0;bottom:0;z-index:10;
-  background:rgba(10,13,23,.88);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
-  border-top:1px solid var(--line);padding:8px 4px calc(8px + env(safe-area-inset-bottom))}
-nav .inner{max-width:470px;margin:0 auto;display:grid;grid-template-columns:repeat(5,1fr)}
-nav button{background:none;border:none;color:var(--dim);font-family:var(--body);
-  font-size:10.5px;cursor:pointer;padding:5px 0;display:flex;flex-direction:column;align-items:center;gap:4px}
-nav button .nico{font-size:19px;line-height:1}
-nav button.on{color:var(--text)}
-nav button.on .nico{background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent;
-  filter:drop-shadow(0 0 8px rgba(139,61,255,.6))}
-
-.view{display:none;animation:fadeUp .28s ease}
-.view.on{display:block}
-@keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
-@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
-
-#toast{position:fixed;left:50%;bottom:100px;transform:translateX(-50%) translateY(20px);
-  background:var(--card-hi);border:1px solid var(--line);border-radius:999px;
-  padding:11px 22px;font-size:14px;opacity:0;pointer-events:none;transition:.3s;z-index:40;
-  white-space:nowrap;box-shadow:0 8px 30px rgba(0,0,0,.5);max-width:90vw;overflow:hidden;text-overflow:ellipsis}
-#toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
-#toast.ok{border-color:rgba(45,224,165,.4)}
-#toast.err{border-color:rgba(255,45,111,.5)}
-
-.debug-panel{display:none;background:#090C16;border:1px solid rgba(255,255,255,.12);border-radius:14px;padding:13px 14px;margin-bottom:14px;font-family:var(--num);font-size:11.5px;line-height:1.55;color:var(--muted);white-space:pre-wrap;word-break:break-word}
-.debug-panel.show{display:block}
-.debug-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;font-family:var(--body)}
-.debug-head b{color:var(--text);font-size:13px}
-.debug-head button{border:1px solid var(--line);background:var(--panel);color:var(--muted);border-radius:8px;padding:5px 9px;font-family:var(--body)}
-.version-badge{font-family:var(--num);font-size:10px;color:var(--dim);margin-top:3px}
-
-.banner{border:1px dashed rgba(139,61,255,.5);background:rgba(139,61,255,.08);
-  border-radius:14px;padding:12px 14px;font-size:13px;color:var(--muted);margin-bottom:14px;line-height:1.6}
-.banner b{color:var(--text)}
-.empty{text-align:center;color:var(--dim);padding:40px 10px;font-size:14px;line-height:1.8}
-.loading{text-align:center;padding:60px 0;color:var(--muted);font-size:14px}
-.spinner{width:36px;height:36px;margin:0 auto 14px;border-radius:50%;
-  border:3px solid rgba(255,255,255,.1);border-top-color:var(--purple);animation:spin 1s linear infinite}
-@keyframes spin{to{transform:rotate(360deg)}}
-
-/* 新增車輛遮罩 */
-.modal{position:fixed;inset:0;z-index:50;background:rgba(4,6,12,.7);
-  display:none;align-items:flex-end;justify-content:center}
-.modal.show{display:flex}
-.modal .sheet{background:var(--card);border:1px solid var(--line);border-radius:22px 22px 0 0;
-  width:100%;max-width:470px;padding:22px 20px calc(24px + env(safe-area-inset-bottom));
-  animation:slideUp .28s cubic-bezier(.22,1,.36,1);max-height:90dvh;overflow:auto}
-@media (min-width:700px){.modal{align-items:center}.modal .sheet{border-radius:22px}}
-@keyframes slideUp{from{transform:translateY(100%)}to{transform:none}}
-</style>
-</head>
-<body>
-
-<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
-  <linearGradient id="ageGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-    <stop offset="0%" stop-color="#FF2D6F"/><stop offset="100%" stop-color="#2D8CFF"/>
-  </linearGradient>
-</defs></svg>
-
-<div id="app">
-  <header>
-    <div style="min-width:0">
-      <small style="display:block;color:var(--muted);font-size:12px;letter-spacing:.14em">MY GARAGE</small>
-      <div class="version-badge" id="appVersion"></div>
-      <button class="car-switch" id="carSwitch">
-        <h1 id="carName">愛車紀錄</h1>
-        <span class="caret">▼</span>
-      </button>
-    </div>
-    <div class="odo-pill"><span class="dot"></span><span id="odoNow">-- km</span></div>
-
-    <!-- 車庫下拉 -->
-    <div class="garage" id="garage"></div>
-  </header>
-
-  <div id="demoBanner" class="banner" style="display:none">
-    <b>示範模式</b> — 尚未連接後端,顯示的是範例資料。請在 index.html 開頭的
-    <b>API_URL</b> 貼上你的 Apps Script 網址後重新上傳。
-  </div>
-
-  <div id="debugPanel" class="debug-panel"><div class="debug-head"><b>連線診斷</b><button id="debugCopy" type="button">複製</button></div><div id="debugText"></div></div>
-
-  <div id="loading" class="loading"><div class="spinner"></div>正在讀取愛車資料…</div>
-
-  <!-- ============ 總覽 ============ -->
-  <section id="view-dash" class="view">
-    <div class="age-card" id="ageCard" style="display:none">
-      <div class="age-ring">
-        <svg viewBox="0 0 56 56">
-          <circle class="bg" cx="28" cy="28" r="24"></circle>
-          <circle class="fg" id="ageRing" cx="28" cy="28" r="24" stroke-dasharray="0 150.8"></circle>
-        </svg>
-        <div class="yr" id="ageYr">0</div>
-      </div>
-      <div class="age-body">
-        <div class="big" id="ageText">--</div>
-        <div class="sub" id="ageSub">--</div>
-      </div>
-    </div>
-
-    <div class="dash-2col">
-      <div class="card gauge-card">
-        <div class="gauge-wrap">
-          <svg viewBox="0 0 230 230">
-            <defs><linearGradient id="gaugeGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-              <stop offset="0%" stop-color="#FF2D6F"/><stop offset="50%" stop-color="#8B3DFF"/><stop offset="100%" stop-color="#2D8CFF"/>
-            </linearGradient></defs>
-            <circle class="gauge-track" cx="115" cy="115" r="100" stroke-dasharray="471.2 628.3"></circle>
-            <circle id="gaugeBar" class="gauge-bar" cx="115" cy="115" r="100" stroke-dasharray="0 628.3"></circle>
-          </svg>
-          <div class="gauge-center">
-            <div class="val" id="avgKmpl">--</div>
-            <div class="unit">km / L</div>
-            <div class="label">平均油耗</div>
-          </div>
-        </div>
-        <div class="gauge-foot">
-          <div><div class="k" id="lastKmpl">--</div><div class="t">最近一次</div></div>
-          <div><div class="k" id="totalKm">--</div><div class="t">累計里程 km</div></div>
-          <div><div class="k" id="totalL">--</div><div class="t">累計公升</div></div>
-        </div>
-      </div>
-
-      <div style="display:contents">
-        <div class="card" style="margin-bottom:14px">
-          <h3>油耗走勢<em>每次加滿計算</em></h3>
-          <div class="chart-box"><canvas id="chartKmpl"></canvas></div>
-        </div>
-      </div>
-    </div>
-
-    <div class="stat-grid">
-      <div class="stat accent"><div class="v" id="costPerKm">--</div><div class="t">每公里持有成本 NT$</div></div>
-      <div class="stat"><div class="v" id="monthSpend">--</div><div class="t">本月花費 NT$</div></div>
-      <div class="stat"><div class="v" id="fuelTotal">--</div><div class="t">累計油錢 NT$</div></div>
-      <div class="stat"><div class="v" id="otherTotal">--</div><div class="t">累計其他支出 NT$</div></div>
-    </div>
-
-    <div class="card">
-      <h3>每月支出<em>近 12 個月</em></h3>
-      <div class="chart-box"><canvas id="chartMonth"></canvas></div>
-    </div>
-  </section>
-
-  <!-- ============ 加油 ============ -->
-  <section id="view-fuel" class="view">
-    <div class="form-title">⛽ 新增加油 <span id="fuelForCar" style="color:var(--muted);font-size:14px;font-weight:400"></span></div>
-    <div class="card">
-      <div class="row2">
-        <div class="field"><label>日期</label><input type="date" id="f-date"></div>
-        <div class="field"><label>里程表 (km)</label><input type="number" id="f-odo" inputmode="decimal" placeholder="例:23150"></div>
-      </div>
-      <div class="row2">
-        <div class="field"><label>公升</label><input type="number" id="f-liters" step="0.01" inputmode="decimal" placeholder="例:52.3"></div>
-        <div class="field"><label>單價 (NT$/L)</label><input type="number" id="f-price" step="0.1" inputmode="decimal" placeholder="例:30.5"></div>
-      </div>
-      <div class="field"><label>金額 (NT$,自動計算,可修改)</label><input type="number" id="f-amount" inputmode="decimal"></div>
-      <div class="field"><label>加油站(選填)</label><input type="text" id="f-station" placeholder="例:台亞 內湖站"></div>
-      <div class="switch-row"><span>這次有加滿</span>
-        <label class="switch"><input type="checkbox" id="f-full" checked><span class="slider"></span></label>
-      </div>
-      <div class="field"><label>備註(選填)</label><input type="text" id="f-note"></div>
-      <button class="btn" id="f-save">儲存加油紀錄</button>
-    </div>
-  </section>
-
-  <!-- ============ 支出 ============ -->
-  <section id="view-maint" class="view">
-    <div class="form-title">💳 新增支出 <span id="maintForCar" style="color:var(--muted);font-size:14px;font-weight:400"></span></div>
-    <div class="card">
-      <div class="row2">
-        <div class="field"><label>日期</label><input type="date" id="m-date"></div>
-        <div class="field"><label>金額 (NT$)</label><input type="number" id="m-amount" inputmode="decimal" placeholder="例:8500"></div>
-      </div>
-      <div class="row2">
-        <div class="field"><label>類型</label>
-          <select id="m-type">
-            <option>保養</option><option>維修</option><option>耗材</option>
-            <option>保險</option><option>稅金</option><option>罰單</option><option>其他</option>
-          </select>
-        </div>
-        <div class="field"><label>里程表 (km)</label><input type="number" id="m-odo" inputmode="decimal" placeholder="選填">
-          <div class="hint" id="odoHint">保養維修建議填,方便算下次週期</div>
-        </div>
-      </div>
-      <div class="field"><label>項目</label><input type="text" id="m-item" placeholder="例:機油+機油芯更換"></div>
-      <div class="field"><label id="shopLabel">店家(選填)</label><input type="text" id="m-shop" placeholder="例:奧迪內湖服務廠"></div>
-      <div class="field"><label>備註(選填)</label><input type="text" id="m-note"></div>
-      <button class="btn" id="m-save">儲存支出紀錄</button>
-    </div>
-  </section>
-
-  <!-- ============ 分析 ============ -->
-  <section id="view-stats" class="view">
-    <div class="form-title">📊 長期分析</div>
-    <div class="stat-grid">
-      <div class="stat"><div class="v" id="kmPerMonth">--</div><div class="t">月均里程 km</div></div>
-      <div class="stat"><div class="v" id="kmPerYear">--</div><div class="t">年均里程 km</div></div>
-      <div class="stat"><div class="v" id="costPerYear">--</div><div class="t">年均花費 NT$</div></div>
-      <div class="stat accent"><div class="v" id="costPerMonth">--</div><div class="t">月均花費 NT$</div></div>
-    </div>
-    <div class="card">
-      <h3>每月行駛里程<em>近 12 個月</em></h3>
-      <div class="chart-box"><canvas id="chartKm"></canvas></div>
-    </div>
-    <div class="card">
-      <h3>年度花費組成<em>依類別堆疊</em></h3>
-      <div class="chart-box"><canvas id="chartYear"></canvas></div>
-    </div>
-    <div class="card">
-      <h3>花費比例<em id="pieRange">全期間</em></h3>
-      <div class="chips" style="margin-bottom:16px">
-        <button class="chip on" data-pie="all">全期間</button>
-        <button class="chip" data-pie="year">今年</button>
-      </div>
-      <div class="chart-box tall"><canvas id="chartPie"></canvas></div>
-      <div class="legend" id="pieLegend"></div>
-    </div>
-  </section>
-
-  <!-- ============ 紀錄 ============ -->
-  <section id="view-list" class="view">
-    <div class="form-title">📋 歷史紀錄</div>
-    <div class="chips">
-      <button class="chip on" data-filter="all">全部</button>
-      <button class="chip" data-filter="fuel">加油</button>
-      <button class="chip" data-filter="maint">其他支出</button>
-    </div>
-    <div id="recList"></div>
-  </section>
-</div>
-
-<nav><div class="inner">
-  <button data-view="dash" class="on"><span class="nico">◉</span>總覽</button>
-  <button data-view="fuel"><span class="nico">⛽</span>加油</button>
-  <button data-view="maint"><span class="nico">💳</span>支出</button>
-  <button data-view="stats"><span class="nico">📊</span>分析</button>
-  <button data-view="list"><span class="nico">☰</span>紀錄</button>
-</div></nav>
-
-<!-- 新增車輛 -->
-<div class="modal" id="vehModal">
-  <div class="sheet">
-    <div class="form-title">🚗 新增車輛</div>
-    <div class="seg">
-      <button id="vt-car" class="on" data-vtype="汽車">🚗 汽車</button>
-      <button id="vt-moto" data-vtype="機車">🏍 機車</button>
-    </div>
-    <div class="field"><label>名稱</label><input type="text" id="v-name" placeholder="例:老婆的 CBR / 家庭休旅"></div>
-    <div class="row2">
-      <div class="field"><label>領牌日期</label><input type="date" id="v-plate"></div>
-      <div class="field"><label>目前里程 (km)</label><input type="number" id="v-odo" inputmode="decimal" placeholder="例:15000"></div>
-    </div>
-    <div class="field"><label>油箱容量 (L,選填)</label><input type="number" id="v-tank" inputmode="decimal" placeholder="汽車約 60,機車約 12"></div>
-    <button class="btn" id="v-save">建立車輛</button>
-    <button class="btn ghost" id="v-cancel" style="margin-top:10px">取消</button>
-  </div>
-</div>
-
-<div id="toast"></div>
-
-<script>
-/* ============================================================
-   ★★★ 只需要改這一行 ★★★
-   把 Apps Script 部署後的網址貼在引號中間。留空 = 示範模式。
-============================================================ */
-const APP_VERSION = 'v2.4.0-ios-fix';
-const API_URL = "https://script.google.com/macros/s/AKfycbw4TN9_LXJt2sq_kcTwmEg0OPFyF8jquhanquUt-_uOQ6Ea0BxJenjVCgLYIhJAOCSKkA/exec";  // Apps Script /exec 網址
-const API_PROXY_URL = "https://mygarage-api.188rex.workers.dev/"; // 建議填 Cloudflare Worker 網址；留空時直接連 Apps Script
-const DEBUG_MODE = new URLSearchParams(location.search).get('debug') === '1';
-
-/* ===== 類別設定 ===== */
-const CATS = [
-  { key:'油錢', color:'#2D8CFF', icon:'⛽' },
-  { key:'保養', color:'#8B3DFF', icon:'🔧' },
-  { key:'維修', color:'#FF2D6F', icon:'🛠' },
-  { key:'耗材', color:'#2DE0A5', icon:'🧴' },
-  { key:'保險', color:'#22C7D6', icon:'🛡' },
-  { key:'稅金', color:'#FFB13D', icon:'🏛' },
-  { key:'罰單', color:'#FF5A47', icon:'🚨' },
-  { key:'其他', color:'#6B7690', icon:'📎' }
+// 為了不破壞既有欄位順序，v2.5 新欄位加在最後面。
+var FUEL_HEADERS = [
+  '日期', '里程(km)', '公升', '單價', '金額', '加油站', '是否加滿',
+  '備註', '建立時間', '車輛', 'ID', '更新時間', '狀態'
 ];
-const catColor = k => (CATS.find(c => c.key === k) || CATS[7]).color;
-const catIcon  = k => (CATS.find(c => c.key === k) || CATS[7]).icon;
-const normType = t => { const s=String(t||'其他').trim(); if(s==='保險/稅費')return'保險'; return CATS.some(c=>c.key===s)?s:'其他'; };
+var MAINT_HEADERS = [
+  '日期', '里程(km)', '類型', '項目', '金額', '店家', '備註',
+  '建立時間', '車輛', 'ID', '更新時間', '狀態'
+];
+var VEH_HEADERS = ['ID', '名稱', '類型', '領牌日期', '初始里程(km)', '油箱容量(L)'];
 
-/* ===== 全域狀態 ===== */
-let DB = { vehicles:[], fuel:[], maint:[] };
-let charts = {};
-let pieRange = 'all';
-let currentVid = null;      // 目前選定車輛 ID
-let newVehType = '汽車';
+var DEFAULT_VID = 'v1';
+var API_VERSION = '2.5.0';
 
-/* ===== 小工具 ===== */
-const $ = s => document.querySelector(s);
-const fmt  = n => Number(n).toLocaleString('zh-TW', {maximumFractionDigits:0});
-const fmt1 = n => Number(n).toLocaleString('zh-TW', {minimumFractionDigits:1, maximumFractionDigits:1});
-const todayStr = () => { const d=new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); };
-function toast(msg, ok=true){ const t=$('#toast'); t.textContent=msg; t.className='show '+(ok?'ok':'err'); setTimeout(()=>{t.className='';},3000); }
-const debugLines=[];
-function debugLog(label, detail){
-  const text = '['+new Date().toLocaleTimeString('zh-TW',{hour12:false})+'] '+label+(detail?'\n'+detail:'');
-  debugLines.push(text);
-  if(debugLines.length>30) debugLines.shift();
-  const el=$('#debugText'); if(el) el.textContent=debugLines.join('\n\n');
-  if(DEBUG_MODE && $('#debugPanel')) $('#debugPanel').classList.add('show');
-}
-function errText(e){
-  if(!e) return 'Unknown error';
-  return [e.name,e.message,e.stack].filter(Boolean).join(' | ');
-}
-function buildApiUrl(actionUrl){
-  if(!API_PROXY_URL) return actionUrl;
-  const u=new URL(actionUrl);
-  const q=u.searchParams.toString();
-  return API_PROXY_URL.replace(/\/$/,'') + '?' + q;
-}
-
-const vehIcon = v => (v && v['類型']==='機車') ? '🏍' : '🚗';
-
-/* ===== 目前車輛相關 ===== */
-function curVehicle(){ return DB.vehicles.find(v => String(v['ID'])===String(currentVid)) || DB.vehicles[0] || null; }
-function fuelRows(){ return DB.fuel.filter(r => matchVid(r)); }
-function maintRows(){ return DB.maint.filter(r => matchVid(r)); }
-// 舊資料的「車輛」欄可能空白 → 視為第一台車
-function matchVid(r){
-  const vid = r['車輛'] ? String(r['車輛']) : (DB.vehicles[0] ? String(DB.vehicles[0]['ID']) : '');
-  return String(vid) === String(currentVid);
-}
-
-/* ===== 分頁切換 ===== */
-document.querySelectorAll('nav button').forEach(btn=>{
-  btn.addEventListener('click', ()=>{
-    document.querySelectorAll('nav button').forEach(b=>b.classList.remove('on'));
-    btn.classList.add('on');
-    document.querySelectorAll('.view').forEach(v=>v.classList.remove('on'));
-    $('#view-'+btn.dataset.view).classList.add('on');
-    window.scrollTo({top:0});
-  });
-});
-
-/* ===== 車庫下拉 ===== */
-$('#carSwitch').addEventListener('click', (e)=>{
-  e.stopPropagation();
-  const g = $('#garage');
-  g.classList.toggle('show');
-  $('#carSwitch').classList.toggle('open');
-});
-document.addEventListener('click', ()=>{ $('#garage').classList.remove('show'); $('#carSwitch').classList.remove('open'); });
-
-function renderGarage(){
-  const g = $('#garage');
-  let html = '';
-  DB.vehicles.forEach(v=>{
-    const on = String(v['ID'])===String(currentVid);
-    const nFuel = DB.fuel.filter(r=>String(r['車輛']||(DB.vehicles[0]&&DB.vehicles[0]['ID']))===String(v['ID'])).length;
-    html += '<div class="gitem '+(on?'on':'')+'" data-vid="'+v['ID']+'">'+
-      '<div class="gic">'+vehIcon(v)+'</div>'+
-      '<div class="gmid"><div class="gname">'+(v['名稱']||'未命名')+'</div>'+
-      '<div class="gsub">'+(v['類型']||'汽車')+' · '+nFuel+' 筆加油</div></div>'+
-      (on?'<div class="gchk">✓</div>':'')+'</div>';
-  });
-  html += '<div class="gadd" id="addVehBtn">＋ 新增車輛</div>';
-  g.innerHTML = html;
-
-  g.querySelectorAll('.gitem').forEach(it=>{
-    it.addEventListener('click', (e)=>{
-      e.stopPropagation();
-      currentVid = it.dataset.vid;
-      g.classList.remove('show'); $('#carSwitch').classList.remove('open');
-      render();
-    });
-  });
-  $('#addVehBtn').addEventListener('click', (e)=>{ e.stopPropagation(); openVehModal(); });
-}
-
-/* ===== 讀取資料 ===== */
-async function loadData(){
-  $('#loading').style.display = 'block';
-  if (!API_URL){
-    $('#demoBanner').style.display = 'block';
-    DB = demoData();
-    afterLoad();
-    return;
+/** 全新使用者第一次執行。 */
+function 初始化() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  ensureSchemaV25_(ss);
+  var veh = ss.getSheetByName(SHEET_VEHICLES);
+  if (veh.getLastRow() < 2) {
+    veh.appendRow([DEFAULT_VID, 'Audi Q5', '汽車', '2024-01-01', 0, 70]);
   }
-  try{
-    const json = await apiGet(API_URL + '?action=all');
-    if (!json.ok) throw new Error(json.error || '後端回傳錯誤');
-    DB = { vehicles: json.vehicles||[], fuel: json.fuel||[], maint: json.maint||[] };
-    afterLoad();
-  }catch(err){
-    $('#loading').style.display = 'none';
-    debugLog('最終讀取失敗',errText(err));
-    $('#debugPanel').classList.add('show');
-    toast('讀取失敗，請查看連線診斷', false);
-  }
+  var def = ss.getSheetByName('工作表1') || ss.getSheetByName('Sheet1');
+  if (def && ss.getSheets().length > 1) ss.deleteSheet(def);
+  Logger.log('初始化完成，版本 ' + API_VERSION);
 }
 
-/* iOS 優先策略：proxy/fetch → direct fetch → iframe → JSONP。\n   正式使用建議設定 API_PROXY_URL，避免 Safari ITP 與 Apps Script 302/CORS。 */
-async function apiGet(url){
-  const attempts=[];
-  const candidates=[];
-  const proxied=buildApiUrl(url);
-  if(API_PROXY_URL) candidates.push(['proxy-fetch',()=>fetchGet(proxied)]);
-  candidates.push(['direct-fetch',()=>fetchGet(url)]);
-  if(!API_PROXY_URL){
-    candidates.push(['iframe',()=>frameGet(url)]);
-    candidates.push(['jsonp',()=>jsonpGet(url)]);
-  }
-  for(const [name,fn] of candidates){
-    const started=performance.now();
-    try{
-      debugLog(name+' 開始', name==='proxy-fetch'?proxied:url);
-      const data=await fn();
-      debugLog(name+' 成功', Math.round(performance.now()-started)+' ms');
-      return data;
-    }catch(e){
-      const msg=errText(e);
-      attempts.push(name+': '+msg);
-      debugLog(name+' 失敗',msg);
-    }
-  }
-  throw new Error(attempts.join(' || '));
+/** 舊版使用者可手動執行，但網站第一次連線時也會自動升級。 */
+function 升級到V25() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  ensureSchemaV25_(ss);
+  Logger.log('已升級到 v2.5.0');
 }
 
-async function fetchGet(url){
-  const controller = new AbortController();
-  const timer = setTimeout(()=>controller.abort(), 15000);
-  try{
-    const sep=url.includes('?')?'&':'?';
-    const bust=url+sep+'_ts='+Date.now();
-    const res = await fetch(bust, {
-      method:'GET', mode:'cors', credentials:'omit', cache:'no-store',
-      redirect:'follow', referrerPolicy:'no-referrer', signal:controller.signal,
-      headers:{'Accept':'application/json,text/plain,*/*'}
-    });
-    debugLog('fetch 回應','status='+res.status+' type='+res.type+' redirected='+res.redirected+' url='+res.url);
-    if (!res.ok) throw new Error('HTTP ' + res.status + ' ' + res.statusText);
-    const text=await res.text();
-    try{return JSON.parse(text);}catch(_){throw new Error('非 JSON 回應: '+text.slice(0,180));}
-  } finally { clearTimeout(timer); }
+/** 保留舊名稱，避免以前的操作說明失效。 */
+function 升級到多車版() {
+  升級到V25();
 }
 
-function frameGet(url){
-  return new Promise((resolve, reject)=>{
-    const token = 'f' + Date.now() + '_' + Math.floor(Math.random()*100000);
-    const iframe = document.createElement('iframe');
-    iframe.style.display = 'none';
-    const timer = setTimeout(()=>{ cleanup(); reject(new Error('iframe timeout')); }, 12000);
-    function onMsg(ev){
-      if (!ev.data || ev.data.__token !== token) return;
-      cleanup();
-      if (ev.data.ok === false && ev.data.error) reject(new Error(ev.data.error));
-      else resolve(ev.data.payload);
-    }
-    function cleanup(){ clearTimeout(timer); window.removeEventListener('message', onMsg); if(iframe.parentNode) iframe.parentNode.removeChild(iframe); }
-    window.addEventListener('message', onMsg);
-    iframe.onerror = ()=>{ cleanup(); reject(new Error('iframe load error')); };
-    iframe.src = url + (url.includes('?')?'&':'?') + 'mode=frame&token=' + encodeURIComponent(token) + '&_ts=' + Date.now();
-    document.body.appendChild(iframe);
-  });
-}
+function doGet(e) {
+  var params = (e && e.parameter) || {};
+  var action = params.action || 'all';
+  var result;
 
-function jsonpGet(url){
-  return new Promise((resolve, reject)=>{
-    const cb = 'jsonp_' + Date.now() + '_' + Math.floor(Math.random()*100000);
-    const s = document.createElement('script');
-    const timer = setTimeout(()=>{ cleanup(); reject(new Error('JSONP timeout / Safari ITP blocked')); }, 15000);
-    function cleanup(){ clearTimeout(timer); try{ delete window[cb]; }catch(e){ window[cb]=undefined; } if(s.parentNode) s.parentNode.removeChild(s); }
-    window[cb] = data=>{ cleanup(); resolve(data); };
-    s.type='text/javascript'; s.async=true;
-    s.src=url+(url.includes('?')?'&':'?')+'callback='+encodeURIComponent(cb)+'&_ts='+Date.now();
-    s.onerror=()=>{ cleanup(); reject(new Error('JSONP script blocked')); };
-    (document.head||document.documentElement).appendChild(s);
-  });
-}
-function afterLoad(){
-  if (!DB.vehicles.length) DB.vehicles = [{'ID':'v1','名稱':'我的車','類型':'汽車','領牌日期':'','初始里程(km)':0,'油箱容量(L)':60}];
-  // 若目前選的車不存在,回到第一台
-  if (!DB.vehicles.some(v=>String(v['ID'])===String(currentVid))) currentVid = String(DB.vehicles[0]['ID']);
-  render();
-}
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    ensureSchemaV25_(ss);
 
-/* ===== 車齡 ===== */
-function carAge(){
-  const v = curVehicle();
-  const raw = v && (v['領牌日期'] || v['落地日期']);
-  if (!raw) return null;
-  const start = new Date(String(raw).slice(0,10));
-  if (isNaN(start.getTime())) return null;
-  const now = new Date();
-  let y = now.getFullYear()-start.getFullYear();
-  let m = now.getMonth()-start.getMonth();
-  if (now.getDate() < start.getDate()) m--;
-  if (m < 0){ y--; m+=12; }
-  const days = Math.max(0, Math.floor((now-start)/86400000));
-  return { y, m, days, totalMonths: Math.max(1, y*12+m), start: String(raw).slice(0,10) };
-}
+    if (action === 'ping') {
+      result = { ok: true, version: API_VERSION, time: new Date().toISOString() };
 
-/* ===== 油耗:加滿→加滿 ===== */
-function calcSegments(rows){
-  const list = [...rows].filter(r=>Number(r['里程(km)'])>0&&Number(r['公升'])>0)
-    .sort((a,b)=>Number(a['里程(km)'])-Number(b['里程(km)']));
-  const segs=[]; let last=-1;
-  for(let i=0;i<list.length;i++){
-    if(list[i]['是否加滿']==='是'){
-      if(last>=0){
-        const km=Number(list[i]['里程(km)'])-Number(list[last]['里程(km)']);
-        let L=0; for(let j=last+1;j<=i;j++) L+=Number(list[j]['公升']);
-        if(km>0&&L>0) segs.push({date:list[i]['日期'],km,liters:L,kmpl:km/L});
-      }
-      last=i;
-    }
-  }
-  return { rows:list, segs };
-}
+    } else if (action === 'all') {
+      result = {
+        ok: true,
+        version: API_VERSION,
+        vehicles: readRows_(ss, SHEET_VEHICLES),
+        fuel: readRows_(ss, SHEET_FUEL),
+        maint: readRows_(ss, SHEET_MAINT)
+      };
 
-/* ===== 支出彙整(當前車輛) ===== */
-function allExpenses(){
-  const list=[];
-  fuelRows().forEach(r=>list.push({date:String(r['日期']),cat:'油錢',amount:Number(r['金額'])||0}));
-  maintRows().forEach(r=>list.push({date:String(r['日期']),cat:normType(r['類型']),amount:Number(r['金額'])||0}));
-  return list;
-}
+    } else if (
+      action === 'addVehicle' ||
+      action === 'addFuel' ||
+      action === 'addMaint' ||
+      action === 'undoRecord'
+    ) {
+      result = executeDedupedWrite_(ss, action, params);
 
-/* ===== 主渲染 ===== */
-function render(){
-  $('#loading').style.display='none';
-  const v = curVehicle();
-  $('#carName').textContent = v ? (v['名稱']||'愛車紀錄') : '愛車紀錄';
-  $('#fuelForCar').textContent = v ? '· '+vehIcon(v)+' '+(v['名稱']||'') : '';
-  $('#maintForCar').textContent = v ? '· '+vehIcon(v)+' '+(v['名稱']||'') : '';
-  renderGarage();
-
-  const fr = fuelRows();
-  const { rows, segs } = calcSegments(fr);
-
-  // 車齡
-  const age = carAge();
-  if (age){
-    $('#ageCard').style.display='flex';
-    $('#ageYr').textContent = age.y;
-    $('#ageText').innerHTML = '車齡 <b>'+age.y+'</b> 年 <b>'+age.m+'</b> 個月';
-    $('#ageSub').textContent = age.start+' 領牌 · 已陪你 '+fmt(age.days)+' 天';
-    const AC=2*Math.PI*24;
-    $('#ageRing').setAttribute('stroke-dasharray',(AC*(age.m/12))+' '+AC);
-  } else $('#ageCard').style.display='none';
-
-  // 里程
-  const odos=[...fr,...maintRows()].map(r=>Number(r['里程(km)'])||0);
-  const maxOdo=odos.length?Math.max(...odos):0;
-  $('#odoNow').textContent = maxOdo?fmt(maxOdo)+' km':'-- km';
-
-  // 平均油耗 + 儀表環(機車刻度放大到 60)
-  const segKm=segs.reduce((a,x)=>a+x.km,0), segL=segs.reduce((a,x)=>a+x.liters,0);
-  const avg=segL>0?segKm/segL:0;
-  $('#avgKmpl').textContent = avg?fmt1(avg):'--';
-  $('#lastKmpl').textContent = segs.length?fmt1(segs[segs.length-1].kmpl):'--';
-  const gaugeMax = (v && v['類型']==='機車') ? 60 : 20;
-  const GC=2*Math.PI*100;
-  $('#gaugeBar').setAttribute('stroke-dasharray',(GC*0.75*Math.min(avg/gaugeMax,1))+' '+GC);
-
-  // 累計
-  const initOdo=v?Number(v['初始里程(km)'])||0:0;
-  const minOdo=rows.length?Number(rows[0]['里程(km)']):0;
-  const base=initOdo>0?initOdo:minOdo;
-  const totalKm=maxOdo>base?maxOdo-base:0;
-  const exp=allExpenses();
-  const fuelTotal=exp.filter(e=>e.cat==='油錢').reduce((a,e)=>a+e.amount,0);
-  const otherTotal=exp.filter(e=>e.cat!=='油錢').reduce((a,e)=>a+e.amount,0);
-  const grand=fuelTotal+otherTotal;
-  const totalL=fr.reduce((a,r)=>a+(Number(r['公升'])||0),0);
-  $('#totalKm').textContent=totalKm?fmt(totalKm):'--';
-  $('#totalL').textContent=totalL?fmt(totalL):'--';
-  $('#fuelTotal').textContent=fmt(fuelTotal);
-  $('#otherTotal').textContent=fmt(otherTotal);
-  $('#costPerKm').textContent=totalKm?fmt1(grand/totalKm):'--';
-  const ym=todayStr().slice(0,7);
-  $('#monthSpend').textContent=fmt(exp.filter(e=>e.date.slice(0,7)===ym).reduce((a,e)=>a+e.amount,0));
-
-  // 平均里程/花費
-  let months=age?age.totalMonths:0;
-  if(!months){ const ds=exp.map(e=>e.date).filter(Boolean).sort();
-    months=ds.length?Math.max(1,Math.round((new Date()-new Date(ds[0]))/2629800000)):1; }
-  $('#kmPerMonth').textContent=totalKm?fmt(totalKm/months):'--';
-  $('#kmPerYear').textContent=totalKm?fmt(totalKm/months*12):'--';
-  $('#costPerMonth').textContent=grand?fmt(grand/months):'--';
-  $('#costPerYear').textContent=grand?fmt(grand/months*12):'--';
-
-  drawKmpl(segs); drawMonth(exp); drawKm(); drawYear(exp); drawPie(exp);
-  renderList('all');
-}
-
-/* ===== 圖表 ===== */
-function cd(){ Chart.defaults.color='#8A93A8'; Chart.defaults.font.family="'Chakra Petch','Noto Sans TC',sans-serif"; Chart.defaults.borderColor='rgba(255,255,255,.06)'; }
-function reset(k){ if(charts[k]) charts[k].destroy(); }
-function last12(){ const a=[],n=new Date(); for(let i=11;i>=0;i--){const d=new Date(n.getFullYear(),n.getMonth()-i,1); a.push(d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'));} return a; }
-
-function drawKmpl(segs){
-  cd(); const ctx=$('#chartKmpl').getContext('2d');
-  const g=ctx.createLinearGradient(0,0,0,200); g.addColorStop(0,'rgba(139,61,255,.35)'); g.addColorStop(1,'rgba(139,61,255,0)');
-  reset('kmpl');
-  charts.kmpl=new Chart(ctx,{type:'line',
-    data:{labels:segs.map(x=>String(x.date).slice(5)),datasets:[{data:segs.map(x=>Number(x.kmpl.toFixed(2))),
-      borderColor:'#8B3DFF',borderWidth:2.5,pointBackgroundColor:'#FF2D6F',pointBorderColor:'#FF2D6F',pointRadius:3.5,fill:true,backgroundColor:g,tension:.35}]},
-    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>' '+c.parsed.y+' km/L'}}},
-      scales:{x:{grid:{display:false}},y:{title:{display:true,text:'km/L'},grid:{color:'rgba(255,255,255,.05)'}}}}});
-}
-function drawMonth(exp){
-  cd(); const months=last12(); const used=CATS.filter(c=>exp.some(e=>e.cat===c.key));
-  const ds=used.map(c=>({label:c.key,backgroundColor:c.color,stack:'a',barPercentage:.65,borderRadius:{topLeft:3,topRight:3},
-    data:months.map(m=>exp.filter(e=>e.date.slice(0,7)===m&&e.cat===c.key).reduce((a,e)=>a+e.amount,0))}));
-  reset('month');
-  charts.month=new Chart($('#chartMonth').getContext('2d'),{type:'bar',
-    data:{labels:months.map(m=>m.slice(5)+'月'),datasets:ds},
-    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'bottom',labels:{boxWidth:9,boxHeight:9,padding:12,font:{size:11}}},
-      tooltip:{callbacks:{label:c=>' '+c.dataset.label+' NT$'+fmt(c.parsed.y)}}},
-      scales:{x:{stacked:true,grid:{display:false}},y:{stacked:true,grid:{color:'rgba(255,255,255,.05)'},ticks:{callback:v=>v>=1000?(v/1000)+'k':v}}}}});
-}
-function drawKm(){
-  cd();
-  const reads=[...fuelRows(),...maintRows()].filter(r=>Number(r['里程(km)'])>0&&r['日期'])
-    .map(r=>({date:String(r['日期']),odo:Number(r['里程(km)'])})).sort((a,b)=>a.date.localeCompare(b.date)||a.odo-b.odo);
-  const bm={};
-  for(let i=1;i<reads.length;i++){ const d=reads[i].odo-reads[i-1].odo; if(d>0&&d<20000){ const m=reads[i].date.slice(0,7); bm[m]=(bm[m]||0)+d; } }
-  const months=last12(); const data=months.map(m=>bm[m]||0);
-  const hit=data.filter(v=>v>0); const avg=hit.length?hit.reduce((a,b)=>a+b,0)/hit.length:0;
-  reset('km');
-  charts.km=new Chart($('#chartKm').getContext('2d'),{type:'bar',
-    data:{labels:months.map(m=>m.slice(5)+'月'),datasets:[
-      {type:'bar',label:'當月里程',data,backgroundColor:'#2D8CFF',borderRadius:4,barPercentage:.6,order:2},
-      {type:'line',label:'平均線',data:months.map(()=>Math.round(avg)),borderColor:'#FFB13D',borderWidth:2,borderDash:[6,4],pointRadius:0,fill:false,order:1}]},
-    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'bottom',labels:{boxWidth:9,boxHeight:9,padding:12,font:{size:11}}},
-      tooltip:{callbacks:{label:c=>' '+fmt(c.parsed.y)+' km'}}},
-      scales:{x:{grid:{display:false}},y:{grid:{color:'rgba(255,255,255,.05)'},ticks:{callback:v=>v>=1000?(v/1000)+'k':v}}}}});
-}
-function drawYear(exp){
-  cd(); const years=[...new Set(exp.map(e=>e.date.slice(0,4)).filter(Boolean))].sort();
-  const used=CATS.filter(c=>exp.some(e=>e.cat===c.key));
-  const ds=used.map(c=>({label:c.key,backgroundColor:c.color,stack:'y',barPercentage:.55,borderRadius:{topLeft:3,topRight:3},
-    data:years.map(y=>exp.filter(e=>e.date.slice(0,4)===y&&e.cat===c.key).reduce((a,e)=>a+e.amount,0))}));
-  reset('year');
-  charts.year=new Chart($('#chartYear').getContext('2d'),{type:'bar',
-    data:{labels:years.map(y=>y+' 年'),datasets:ds},
-    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'bottom',labels:{boxWidth:9,boxHeight:9,padding:12,font:{size:11}}},
-      tooltip:{callbacks:{label:c=>' '+c.dataset.label+' NT$'+fmt(c.parsed.y)}}},
-      scales:{x:{stacked:true,grid:{display:false}},y:{stacked:true,grid:{color:'rgba(255,255,255,.05)'},ticks:{callback:v=>v>=1000?(v/1000)+'k':v}}}}});
-}
-function drawPie(exp){
-  cd(); const yr=todayStr().slice(0,4);
-  const src=pieRange==='year'?exp.filter(e=>e.date.slice(0,4)===yr):exp;
-  const sums=CATS.map(c=>({key:c.key,color:c.color,v:src.filter(e=>e.cat===c.key).reduce((a,e)=>a+e.amount,0)})).filter(x=>x.v>0);
-  const total=sums.reduce((a,x)=>a+x.v,0);
-  $('#pieRange').textContent=pieRange==='year'?(yr+' 年'):'全期間';
-  reset('pie');
-  if(!total){ $('#pieLegend').innerHTML='<span style="color:var(--dim)">此期間尚無花費紀錄</span>'; return; }
-  charts.pie=new Chart($('#chartPie').getContext('2d'),{type:'doughnut',
-    data:{labels:sums.map(x=>x.key),datasets:[{data:sums.map(x=>x.v),backgroundColor:sums.map(x=>x.color),borderColor:'#111729',borderWidth:3,hoverOffset:8}]},
-    options:{responsive:true,maintainAspectRatio:false,cutout:'62%',plugins:{legend:{display:false},
-      tooltip:{callbacks:{label:c=>' NT$'+fmt(c.parsed)+'  ('+(c.parsed/total*100).toFixed(1)+'%)'}}}}});
-  $('#pieLegend').innerHTML=sums.sort((a,b)=>b.v-a.v).map(x=>'<span><i style="background:'+x.color+'"></i>'+x.key+' <b>'+(x.v/total*100).toFixed(0)+'%</b></span>').join('');
-}
-$('#view-stats').querySelectorAll('[data-pie]').forEach(c=>{
-  c.addEventListener('click',()=>{ $('#view-stats').querySelectorAll('[data-pie]').forEach(x=>x.classList.remove('on')); c.classList.add('on'); pieRange=c.dataset.pie; drawPie(allExpenses()); });
-});
-
-/* ===== 清單 ===== */
-document.querySelectorAll('[data-filter]').forEach(c=>{
-  c.addEventListener('click',()=>{ document.querySelectorAll('[data-filter]').forEach(x=>x.classList.remove('on')); c.classList.add('on'); renderList(c.dataset.filter); });
-});
-function renderList(filter){
-  const { segs }=calcSegments(fuelRows());
-  const kmByKey={}; segs.forEach(x=>{kmByKey[String(x.date)]=x.kmpl;});
-  let items=[];
-  if(filter!=='maint') items=items.concat(fuelRows().map(r=>({kind:'fuel',r})));
-  if(filter!=='fuel')  items=items.concat(maintRows().map(r=>({kind:'maint',r})));
-  items.sort((a,b)=>String(b.r['日期']).localeCompare(String(a.r['日期']))||(Number(b.r['里程(km)'])||0)-(Number(a.r['里程(km)'])||0));
-  const box=$('#recList');
-  if(!items.length){ box.innerHTML='<div class="empty">這台車還沒有紀錄。<br>到「加油」或「支出」新增第一筆吧!</div>'; return; }
-  box.innerHTML=items.map(function(it){
-    const r=it.r;
-    if(it.kind==='fuel'){
-      const k=(r['是否加滿']==='是'&&kmByKey[String(r['日期'])])?'<div class="kmpl">▲ '+fmt1(kmByKey[String(r['日期'])])+' km/L</div>':'';
-      return '<div class="rec"><div class="ico" style="color:'+catColor('油錢')+'">⛽</div>'+
-        '<div class="mid"><div class="l1">'+(r['加油站']||'加油')+(r['是否加滿']==='是'?'':'(未加滿)')+'</div>'+
-        '<div class="l2">'+r['日期']+' · '+fmt(r['里程(km)'])+' km · '+r['公升']+' L @ '+r['單價']+'</div></div>'+
-        '<div class="end"><div class="amt">$'+fmt(r['金額'])+'</div>'+k+'</div></div>';
-    }
-    const t=normType(r['類型']); const odo=Number(r['里程(km)'])>0?' · '+fmt(r['里程(km)'])+' km':'';
-    return '<div class="rec"><div class="ico" style="color:'+catColor(t)+'">'+catIcon(t)+'</div>'+
-      '<div class="mid"><div class="l1">'+(r['項目']||t)+'</div>'+
-      '<div class="l2">'+r['日期']+odo+' · '+(r['店家']||t)+'</div></div>'+
-      '<div class="end"><div class="amt">$'+fmt(r['金額'])+'</div></div></div>';
-  }).join('');
-}
-
-/* ===== 表單互動 ===== */
-function autoAmount(){ const L=parseFloat($('#f-liters').value),P=parseFloat($('#f-price').value); if(L>0&&P>0)$('#f-amount').value=Math.round(L*P); }
-$('#f-liters').addEventListener('input',autoAmount);
-$('#f-price').addEventListener('input',autoAmount);
-$('#m-type').addEventListener('change',()=>{
-  const t=$('#m-type').value; const noOdo=['稅金','罰單','保險'].includes(t);
-  $('#odoHint').textContent=noOdo?'這類支出通常不用填里程':'保養維修建議填,方便算下次週期';
-  $('#shopLabel').textContent=t==='罰單'?'開單機關(選填)':t==='保險'?'保險公司(選填)':t==='稅金'?'繳費管道(選填)':'店家(選填)';
-  $('#m-item').placeholder=t==='罰單'?'例:超速 10km/h 以內':t==='保險'?'例:乙式車體險 續保':t==='稅金'?'例:牌照稅 / 燃料費':'例:機油+機油芯更換';
-});
-
-/* ===== 新增車輛 modal ===== */
-function openVehModal(){ $('#vehModal').classList.add('show'); $('#v-plate').value=''; $('#v-odo').value=''; $('#v-tank').value=''; $('#v-name').value=''; setVehType('汽車'); }
-function closeVehModal(){ $('#vehModal').classList.remove('show'); }
-function setVehType(t){ newVehType=t; $('#vt-car').classList.toggle('on',t==='汽車'); $('#vt-moto').classList.toggle('on',t==='機車'); }
-$('#vt-car').addEventListener('click',()=>setVehType('汽車'));
-$('#vt-moto').addEventListener('click',()=>setVehType('機車'));
-$('#v-cancel').addEventListener('click',closeVehModal);
-$('#vehModal').addEventListener('click',(e)=>{ if(e.target.id==='vehModal') closeVehModal(); });
-
-$('#v-save').addEventListener('click',async()=>{
-  const data={ name:$('#v-name').value.trim(), type:newVehType, plateDate:$('#v-plate').value, initOdo:parseFloat($('#v-odo').value)||0, tank:parseFloat($('#v-tank').value)||(newVehType==='機車'?12:60) };
-  if(!data.name){ toast('請幫車輛取個名字',false); return; }
-  const btn=$('#v-save'); btn.disabled=true; btn.textContent='建立中…';
-  try{
-    if(!API_URL){
-      const vid='v'+Date.now();
-      DB.vehicles.push({'ID':vid,'名稱':data.name,'類型':data.type,'領牌日期':data.plateDate,'初始里程(km)':data.initOdo,'油箱容量(L)':data.tank});
-      currentVid=vid; toast('✓ 已新增(示範模式,重整後消失)'); closeVehModal(); render();
     } else {
-      const json = await post({action:'addVehicle', data});
-      if(json && json.id) currentVid = json.id;
-      toast('✓ 車輛已建立'); closeVehModal(); await loadData();
+      result = { ok: false, error: '未知的 action：' + action };
     }
-  }catch(err){ toast('新增失敗:'+err.message,false); }
-  btn.disabled=false; btn.textContent='建立車輛';
-});
+  } catch (err) {
+    result = { ok: false, error: String(err && err.message ? err.message : err) };
+  }
 
-/* ===== 送出加油/支出(帶當前車輛 ID) ===== */
-async function post(payload){
-  if(!API_URL){ toast('示範模式無法儲存,請先完成後端部署',false); return false; }
-  // 資料包成網址參數送出,走雙保險通道;
-  // reqId 是唯一編號,就算備援重送,後端也只會記一筆(防重複)
-  const reqId = 'r' + Date.now() + '_' + Math.floor(Math.random()*1000000);
-  const url = API_URL + '?action=' + encodeURIComponent(payload.action)
-            + '&payload=' + encodeURIComponent(JSON.stringify(payload.data))
-            + '&reqId=' + reqId;
-  const json = await apiGet(url);
-  if(!json.ok) throw new Error(json.error||'寫入失敗');
-  return json;
-}
-$('#f-save').addEventListener('click',async()=>{
-  const data={ date:$('#f-date').value, odo:parseFloat($('#f-odo').value), liters:parseFloat($('#f-liters').value),
-    price:parseFloat($('#f-price').value), amount:parseFloat($('#f-amount').value), station:$('#f-station').value.trim(),
-    full:$('#f-full').checked, note:$('#f-note').value.trim(), vehicleId:currentVid };
-  if(!data.date||!(data.odo>0)||!(data.liters>0)||!(data.amount>=0)){ toast('請填寫日期、里程、公升與金額',false); return; }
-  const btn=$('#f-save'); btn.disabled=true; btn.textContent='儲存中…';
-  try{ if(await post({action:'addFuel',data})){ toast('✓ 加油紀錄已儲存'); ['f-odo','f-liters','f-price','f-amount','f-station','f-note'].forEach(id=>$('#'+id).value=''); await loadData(); } }
-  catch(err){ toast('儲存失敗:'+err.message,false); }
-  btn.disabled=false; btn.textContent='儲存加油紀錄';
-});
-$('#m-save').addEventListener('click',async()=>{
-  const data={ date:$('#m-date').value, odo:parseFloat($('#m-odo').value)||0, type:$('#m-type').value, item:$('#m-item').value.trim(),
-    amount:parseFloat($('#m-amount').value), shop:$('#m-shop').value.trim(), note:$('#m-note').value.trim(), vehicleId:currentVid };
-  if(!data.date||!data.item||!(data.amount>=0)){ toast('請填寫日期、項目與金額',false); return; }
-  const btn=$('#m-save'); btn.disabled=true; btn.textContent='儲存中…';
-  try{ if(await post({action:'addMaint',data})){ toast('✓ 支出紀錄已儲存'); ['m-odo','m-item','m-amount','m-shop','m-note'].forEach(id=>$('#'+id).value=''); await loadData(); } }
-  catch(err){ toast('儲存失敗:'+err.message,false); }
-  btn.disabled=false; btn.textContent='儲存支出紀錄';
-});
-
-/* ===== 示範資料(兩台車) ===== */
-function demoData(){
-  return {
-    vehicles:[
-      {'ID':'v1','名稱':'Audi Q5','類型':'汽車','領牌日期':'2024-03-15','初始里程(km)':0,'油箱容量(L)':70},
-      {'ID':'v2','名稱':'老婆的 CBR','類型':'機車','領牌日期':'2023-08-01','初始里程(km)':0,'油箱容量(L)':16}
-    ],
-    fuel:[
-      {'日期':'2025-08-10','里程(km)':12040,'公升':47.5,'單價':29.9,'金額':1420,'加油站':'台亞 內湖站','是否加滿':'是','備註':'','車輛':'v1'},
-      {'日期':'2025-11-18','里程(km)':13720,'公升':50.4,'單價':30.0,'金額':1512,'加油站':'台亞 內湖站','是否加滿':'是','備註':'','車輛':'v1'},
-      {'日期':'2026-01-22','里程(km)':14880,'公升':51.8,'單價':30.5,'金額':1580,'加油站':'中油 南京東路','是否加滿':'是','備註':'','車輛':'v1'},
-      {'日期':'2026-03-29','里程(km)':16510,'公升':50.6,'單價':30.4,'金額':1538,'加油站':'中油 民權東路','是否加滿':'是','備註':'','車輛':'v1'},
-      {'日期':'2026-05-24','里程(km)':18010,'公升':49.8,'單價':29.8,'金額':1484,'加油站':'台亞 內湖站','是否加滿':'是','備註':'','車輛':'v1'},
-      {'日期':'2026-06-20','里程(km)':18560,'公升':51.2,'單價':30.0,'金額':1536,'加油站':'中油 民權東路','是否加滿':'是','備註':'','車輛':'v1'},
-      {'日期':'2026-04-02','里程(km)':8200,'公升':11.5,'單價':30.5,'金額':351,'加油站':'台亞','是否加滿':'是','備註':'','車輛':'v2'},
-      {'日期':'2026-05-01','里程(km)':8620,'公升':10.8,'單價':30.5,'金額':329,'加油站':'台亞','是否加滿':'是','備註':'','車輛':'v2'},
-      {'日期':'2026-06-05','里程(km)':9080,'公升':11.9,'單價':30.2,'金額':359,'加油站':'中油','是否加滿':'是','備註':'','車輛':'v2'}
-    ],
-    maint:[
-      {'日期':'2025-04-08','里程(km)':10200,'類型':'保險','項目':'乙式車體險 + 強制險','金額':38000,'店家':'國泰產險','備註':'','車輛':'v1'},
-      {'日期':'2025-05-20','里程(km)':0,'類型':'稅金','項目':'牌照稅','金額':11230,'店家':'','備註':'','車輛':'v1'},
-      {'日期':'2025-07-12','里程(km)':11500,'類型':'保養','項目':'定期保養','金額':8500,'店家':'奧迪內湖','備註':'','車輛':'v1'},
-      {'日期':'2025-12-14','里程(km)':0,'類型':'罰單','項目':'超速 10km/h 以內','金額':1600,'店家':'台北市警局','備註':'','車輛':'v1'},
-      {'日期':'2026-02-03','里程(km)':15100,'類型':'維修','項目':'前輪軸承更換','金額':14200,'店家':'奧迪內湖','備註':'','車輛':'v1'},
-      {'日期':'2026-06-02','里程(km)':0,'類型':'稅金','項目':'牌照稅','金額':11230,'店家':'','備註':'','車輛':'v1'},
-      {'日期':'2026-03-10','里程(km)':7900,'類型':'保養','項目':'機油更換','金額':800,'店家':'','備註':'','車輛':'v2'},
-      {'日期':'2026-05-20','里程(km)':0,'類型':'稅金','項目':'牌照稅+燃料費','金額':1800,'店家':'','備註':'','車輛':'v2'}
-    ]
-  };
+  return output_(result, params);
 }
 
-/* ===== 啟動 ===== */
-$('#appVersion').textContent=APP_VERSION;
-debugLog('環境','version='+APP_VERSION+'\npage='+location.href+'\nua='+navigator.userAgent+'\nstandalone='+(navigator.standalone===true)+'\nproxy='+(API_PROXY_URL||'(未設定)'));
-if(DEBUG_MODE) $('#debugPanel').classList.add('show');
-$('#debugCopy').addEventListener('click',async()=>{
-  try{await navigator.clipboard.writeText($('#debugText').textContent); toast('診斷內容已複製');}
-  catch(e){toast('無法自動複製，請長按文字選取',false);}
-});
-window.addEventListener('error',e=>debugLog('window error',e.message+' @ '+e.filename+':'+e.lineno));
-window.addEventListener('unhandledrejection',e=>debugLog('unhandled rejection',errText(e.reason)));
-$('#f-date').value=todayStr();
-$('#m-date').value=todayStr();
-$('#m-type').dispatchEvent(new Event('change'));
-loadData();
-</script>
-</body>
-</html>
+function doPost(e) {
+  try {
+    var body = JSON.parse((e.postData && e.postData.contents) || '{}');
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    ensureSchemaV25_(ss);
+    return output_(handleWrite_(ss, body.action, body.data || {}), {});
+  } catch (err) {
+    return output_({ ok: false, error: String(err && err.message ? err.message : err) }, {});
+  }
+}
+
+function executeDedupedWrite_(ss, action, params) {
+  var reqId = params.reqId || '';
+  var cache = CacheService.getScriptCache();
+  var cacheKey = reqId ? 'req_' + reqId : '';
+
+  if (cacheKey) {
+    var previous = cache.get(cacheKey);
+    if (previous) return JSON.parse(previous);
+  }
+
+  var data = JSON.parse(params.payload || '{}');
+  var result = handleWrite_(ss, action, data);
+  if (cacheKey) cache.put(cacheKey, JSON.stringify(result), 600);
+  return result;
+}
+
+function handleWrite_(ss, action, d) {
+  var now = nowText_();
+
+  if (action === 'addVehicle') {
+    var vid = 'v_' + Utilities.getUuid();
+    appendByHeaders_(ss.getSheetByName(SHEET_VEHICLES), {
+      'ID': vid,
+      '名稱': d.name || '未命名',
+      '類型': d.type || '汽車',
+      '領牌日期': d.plateDate || '',
+      '初始里程(km)': Number(d.initOdo) || 0,
+      '油箱容量(L)': Number(d.tank) || 60
+    });
+    return { ok: true, id: vid };
+  }
+
+  if (action === 'addFuel') {
+    var fuelId = 'fuel_' + Utilities.getUuid();
+    appendByHeaders_(ss.getSheetByName(SHEET_FUEL), {
+      '日期': d.date || '',
+      '里程(km)': Number(d.odo),
+      '公升': Number(d.liters),
+      '單價': Number(d.price),
+      '金額': Number(d.amount),
+      '加油站': d.station || '',
+      '是否加滿': d.full ? '是' : '否',
+      '備註': d.note || '',
+      '建立時間': now,
+      '車輛': d.vehicleId || DEFAULT_VID,
+      'ID': fuelId,
+      '更新時間': now,
+      '狀態': '有效'
+    });
+    return { ok: true, id: fuelId, kind: 'fuel' };
+  }
+
+  if (action === 'addMaint') {
+    var maintId = 'maint_' + Utilities.getUuid();
+    appendByHeaders_(ss.getSheetByName(SHEET_MAINT), {
+      '日期': d.date || '',
+      '里程(km)': Number(d.odo) || 0,
+      '類型': d.type || '保養',
+      '項目': d.item || '',
+      '金額': Number(d.amount),
+      '店家': d.shop || '',
+      '備註': d.note || '',
+      '建立時間': now,
+      '車輛': d.vehicleId || DEFAULT_VID,
+      'ID': maintId,
+      '更新時間': now,
+      '狀態': '有效'
+    });
+    return { ok: true, id: maintId, kind: 'maint' };
+  }
+
+  if (action === 'undoRecord') {
+    return undoRecord_(ss, d.kind, d.id, now);
+  }
+
+  return { ok: false, error: '未知的 action：' + action };
+}
+
+/**
+ * 將紀錄標示為「已刪除」。不真的刪除列，避免誤刪後無法復原。
+ */
+function undoRecord_(ss, kind, id, now) {
+  if (!id) return { ok: false, error: '缺少紀錄 ID' };
+
+  var sheetName = kind === 'fuel' ? SHEET_FUEL : kind === 'maint' ? SHEET_MAINT : '';
+  if (!sheetName) return { ok: false, error: '無效的紀錄類型' };
+
+  var sheet = ss.getSheetByName(sheetName);
+  var headers = getHeaders_(sheet);
+  var idCol = headers.indexOf('ID') + 1;
+  var statusCol = headers.indexOf('狀態') + 1;
+  var updateCol = headers.indexOf('更新時間') + 1;
+  if (!idCol || !statusCol) return { ok: false, error: '工作表缺少 v2.5 欄位' };
+
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return { ok: false, error: '找不到紀錄' };
+
+  var ids = sheet.getRange(2, idCol, lastRow - 1, 1).getDisplayValues();
+  for (var i = ids.length - 1; i >= 0; i--) {
+    if (String(ids[i][0]) === String(id)) {
+      var row = i + 2;
+      sheet.getRange(row, statusCol).setValue('已刪除');
+      if (updateCol) sheet.getRange(row, updateCol).setValue(now);
+      return { ok: true, id: id, undone: true };
+    }
+  }
+
+  return { ok: false, error: '找不到可撤銷的紀錄' };
+}
+
+// ================= 資料表升級與讀寫工具 =================
+
+function ensureSchemaV25_(ss) {
+  var fuel = ensureSheet_(ss, SHEET_FUEL, FUEL_HEADERS);
+  var maint = ensureSheet_(ss, SHEET_MAINT, MAINT_HEADERS);
+  var vehicles = ensureSheet_(ss, SHEET_VEHICLES, VEH_HEADERS);
+
+  ensureHeaders_(fuel, FUEL_HEADERS);
+  ensureHeaders_(maint, MAINT_HEADERS);
+  ensureHeaders_(vehicles, VEH_HEADERS);
+
+  fillMissingMetadata_(fuel, 'fuel_');
+  fillMissingMetadata_(maint, 'maint_');
+}
+
+function ensureSheet_(ss, name, headers) {
+  var sheet = ss.getSheetByName(name);
+  if (!sheet) {
+    sheet = ss.insertSheet(name);
+    sheet.getRange(1, 1, 1, headers.length).setValues([headers]).setFontWeight('bold');
+    sheet.setFrozenRows(1);
+  }
+  return sheet;
+}
+
+function ensureHeaders_(sheet, requiredHeaders) {
+  var existing = getHeaders_(sheet);
+  var nextCol = existing.length + 1;
+
+  for (var i = 0; i < requiredHeaders.length; i++) {
+    if (existing.indexOf(requiredHeaders[i]) < 0) {
+      sheet.getRange(1, nextCol).setValue(requiredHeaders[i]).setFontWeight('bold');
+      existing.push(requiredHeaders[i]);
+      nextCol++;
+    }
+  }
+  sheet.setFrozenRows(1);
+}
+
+function fillMissingMetadata_(sheet, prefix) {
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return;
+
+  var headers = getHeaders_(sheet);
+  var idCol = headers.indexOf('ID') + 1;
+  var createdCol = headers.indexOf('建立時間') + 1;
+  var updateCol = headers.indexOf('更新時間') + 1;
+  var statusCol = headers.indexOf('狀態') + 1;
+  if (!idCol || !statusCol) return;
+
+  var rowCount = lastRow - 1;
+  var ids = sheet.getRange(2, idCol, rowCount, 1).getValues();
+  var statuses = sheet.getRange(2, statusCol, rowCount, 1).getValues();
+  var updates = updateCol ? sheet.getRange(2, updateCol, rowCount, 1).getValues() : [];
+  var created = createdCol ? sheet.getRange(2, createdCol, rowCount, 1).getValues() : [];
+
+  var changedId = false;
+  var changedStatus = false;
+  var changedUpdate = false;
+
+  for (var i = 0; i < rowCount; i++) {
+    if (!ids[i][0]) {
+      ids[i][0] = prefix + Utilities.getUuid();
+      changedId = true;
+    }
+    if (!statuses[i][0]) {
+      statuses[i][0] = '有效';
+      changedStatus = true;
+    }
+    if (updateCol && !updates[i][0]) {
+      updates[i][0] = createdCol && created[i][0] ? created[i][0] : nowText_();
+      changedUpdate = true;
+    }
+  }
+
+  if (changedId) sheet.getRange(2, idCol, rowCount, 1).setValues(ids);
+  if (changedStatus) sheet.getRange(2, statusCol, rowCount, 1).setValues(statuses);
+  if (changedUpdate) sheet.getRange(2, updateCol, rowCount, 1).setValues(updates);
+}
+
+function appendByHeaders_(sheet, obj) {
+  var headers = getHeaders_(sheet);
+  var row = [];
+  for (var i = 0; i < headers.length; i++) {
+    row.push(Object.prototype.hasOwnProperty.call(obj, headers[i]) ? obj[headers[i]] : '');
+  }
+  sheet.appendRow(row);
+}
+
+function getHeaders_(sheet) {
+  var lastCol = Math.max(1, sheet.getLastColumn());
+  return sheet.getRange(1, 1, 1, lastCol).getDisplayValues()[0].map(function(v) {
+    return String(v).trim();
+  });
+}
+
+function readRows_(ss, sheetName) {
+  var sheet = ss.getSheetByName(sheetName);
+  if (!sheet) return [];
+
+  var values = sheet.getDataRange().getValues();
+  if (values.length < 2) return [];
+
+  var titles = values[0].map(function(v) { return String(v).trim(); });
+  var rows = [];
+
+  for (var i = 1; i < values.length; i++) {
+    var row = {};
+    var hasData = false;
+
+    for (var j = 0; j < titles.length; j++) {
+      var key = titles[j];
+      if (!key) continue;
+      var v = values[i][j];
+      if (v instanceof Date) v = Utilities.formatDate(v, 'Asia/Taipei', 'yyyy-MM-dd');
+      row[key] = v;
+      if (v !== '' && v != null) hasData = true;
+    }
+
+    if (!hasData) continue;
+    if (String(row['狀態'] || '有效') === '已刪除') continue;
+
+    if (
+      (row['日期'] != null && row['日期'] !== '') ||
+      (row['名稱'] != null && row['名稱'] !== '')
+    ) {
+      rows.push(row);
+    }
+  }
+
+  return rows;
+}
+
+function readSettings_(ss) {
+  var sheet = ss.getSheetByName(SHEET_SETTINGS);
+  if (!sheet) return {};
+  var values = sheet.getDataRange().getValues();
+  var obj = {};
+  for (var i = 1; i < values.length; i++) {
+    var key = String(values[i][0]).trim();
+    if (key) obj[key] = values[i][1];
+  }
+  return obj;
+}
+
+function nowText_() {
+  return Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyy-MM-dd HH:mm:ss');
+}
+
+// ================= 輸出格式 =================
+
+function output_(obj, params) {
+  var json = JSON.stringify(obj);
+
+  if (params && params.mode === 'frame') {
+    var token = String(params.token || '');
+    var html =
+      '<!DOCTYPE html><html><head><meta charset="utf-8"></head><body><script>' +
+      'var __r=' + json + ';' +
+      'try{window.top.postMessage({__token:' + JSON.stringify(token) + ',ok:true,payload:__r},"*");}' +
+      'catch(e){try{window.top.postMessage({__token:' + JSON.stringify(token) + ',ok:false,error:String(e)},"*");}catch(_){}}' +
+      '<\/script></body></html>';
+
+    return HtmlService.createHtmlOutput(html)
+      .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+  }
+
+  if (params && params.callback) {
+    var callback = String(params.callback || '');
+    if (!/^[A-Za-z_$][0-9A-Za-z_$\.]*$/.test(callback)) {
+      return ContentService
+        .createTextOutput(JSON.stringify({ ok: false, error: '無效的 callback' }))
+        .setMimeType(ContentService.MimeType.JSON);
+    }
+    return ContentService
+      .createTextOutput(callback + '(' + json + ')')
+      .setMimeType(ContentService.MimeType.JAVASCRIPT);
+  }
+
+  return ContentService
+    .createTextOutput(json)
+    .setMimeType(ContentService.MimeType.JSON);
+}
