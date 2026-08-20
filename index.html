@@ -2,10 +2,11 @@
 <!--
   ═══════════════════════════════════════════════════════════════
    愛車紀錄 MyGarage — 前端(單一檔案,無需建置)
-   版本:v3.0.0        更新日期:2026-08-20
+   版本:v3.0.1        更新日期:2026-08-20
   ═══════════════════════════════════════════════════════════════
 
    【這一版改了什麼】
+   - 修正 iPhone 日期欄位撐開、疊到隔壁里程表欄位(解除 iOS 原生尺寸鎖定)
    - 圖表加入期間切換(近12月/近24月/全部),超過24個月自動按季彙總
    - 支出圖加入每月預算線,超支時提示
    - 分析頁新增「長期累計油耗」(總里程÷總公升)
@@ -173,7 +174,20 @@ header{display:flex;align-items:center;justify-content:space-between;margin-bott
 .field input:focus,.field select:focus{border-color:var(--purple);box-shadow:0 0 0 3px rgba(139,61,255,.18)}
 .field input[type=number]{font-family:var(--num)}
 .hint{font-size:11.5px;color:var(--dim);margin-top:5px;line-height:1.5}
+/* iOS Safari 的原生日期欄位會依「2026年8月20日」算出最小寬度,
+   無視 width:100% 而撐開、疊到隔壁欄位。
+   解除原生外觀即可讓它服從欄位寬度(日期格式與字級都不受影響)。 */
+.field input[type=date],
+.field input[type=time]{
+  -webkit-appearance:none;
+  appearance:none;
+  min-width:0;
+  width:100%;
+  box-sizing:border-box;
+  text-align:left;
+}
 .row2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.row2 > *{min-width:0}   /* 讓兩欄能正常縮小,不被內容撐開 */
 .switch-row{display:flex;align-items:center;justify-content:space-between;
   background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:13px 14px;margin-bottom:13px}
 .switch-row span{font-size:15px}
@@ -498,7 +512,7 @@ nav button.on .nico{background:var(--grad);-webkit-background-clip:text;backgrou
    ★★★ 只需要改這一行 ★★★
    把 Apps Script 部署後的網址貼在引號中間。留空 = 示範模式。
 ============================================================ */
-const APP_VERSION = 'v3.0.0';
+const APP_VERSION = 'v3.0.1';
 const API_URL = "https://script.google.com/macros/s/AKfycbw4TN9_LXJt2sq_kcTwmEg0OPFyF8jquhanquUt-_uOQ6Ea0BxJenjVCgLYIhJAOCSKkA/exec";  // Apps Script /exec 網址
 const API_PROXY_URL = "https://mygarage-api.188rex.workers.dev/"; // 建議填 Cloudflare Worker 網址；留空時直接連 Apps Script
 const DEBUG_MODE = new URLSearchParams(location.search).get('debug') === '1';
