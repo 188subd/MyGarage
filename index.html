@@ -2,10 +2,13 @@
 <!--
   ═══════════════════════════════════════════════════════════════
    愛車紀錄 MyGarage — 前端(單一檔案,無需建置)
-   版本:v3.0.1        更新日期:2026-08-20
+   版本:v3.1.0        更新日期:2026-08-20
   ═══════════════════════════════════════════════════════════════
 
    【這一版改了什麼】
+   - 新增「停車費」類型(先前記的停車費會被歸到「其他」,現已正確分類)
+   - 圖表改用六大項:加油 / 保養維修耗材 / 燃料牌照稅 / 保費 / 停車費 / 罰單 / 其他
+   - 紀錄頁篩選籤改為六大項,並顯示該分類的筆數與金額小計
    - 修正 iPhone 日期欄位撐開、疊到隔壁里程表欄位(解除 iOS 原生尺寸鎖定)
    - 圖表加入期間切換(近12月/近24月/全部),超過24個月自動按季彙總
    - 支出圖加入每月預算線,超支時提示
@@ -407,7 +410,8 @@ nav button.on .nico{background:var(--grad);-webkit-background-clip:text;backgrou
         <div class="field"><label>類型</label>
           <select id="m-type">
             <option>保養</option><option>維修</option><option>耗材</option>
-            <option>保險</option><option>稅金</option><option>罰單</option><option>其他</option>
+            <option>保險</option><option>稅金</option><option>罰單</option>
+            <option>停車費</option><option>其他</option>
           </select>
         </div>
         <div class="field"><label>里程表 (km)</label><input type="number" id="m-odo" inputmode="decimal" placeholder="選填">
@@ -471,8 +475,13 @@ nav button.on .nico{background:var(--grad);-webkit-background-clip:text;backgrou
     <div class="form-title">📋 歷史紀錄</div>
     <div class="chips">
       <button class="chip on" data-filter="all">全部</button>
-      <button class="chip" data-filter="fuel">加油</button>
-      <button class="chip" data-filter="maint">其他支出</button>
+      <button class="chip" data-filter="加油">⛽ 加油</button>
+      <button class="chip" data-filter="保養維修耗材">🔧 保養維修耗材</button>
+      <button class="chip" data-filter="燃料牌照稅">🏛 燃料牌照稅</button>
+      <button class="chip" data-filter="保費">🛡 保費</button>
+      <button class="chip" data-filter="停車費">🅿️ 停車費</button>
+      <button class="chip" data-filter="罰單">🚨 罰單</button>
+      <button class="chip" data-filter="其他">📎 其他</button>
     </div>
     <div id="recList"></div>
   </section>
@@ -512,7 +521,7 @@ nav button.on .nico{background:var(--grad);-webkit-background-clip:text;backgrou
    ★★★ 只需要改這一行 ★★★
    把 Apps Script 部署後的網址貼在引號中間。留空 = 示範模式。
 ============================================================ */
-const APP_VERSION = 'v3.0.1';
+const APP_VERSION = 'v3.1.0';
 const API_URL = "https://script.google.com/macros/s/AKfycbw4TN9_LXJt2sq_kcTwmEg0OPFyF8jquhanquUt-_uOQ6Ea0BxJenjVCgLYIhJAOCSKkA/exec";  // Apps Script /exec 網址
 const API_PROXY_URL = "https://mygarage-api.188rex.workers.dev/"; // 建議填 Cloudflare Worker 網址；留空時直接連 Apps Script
 const DEBUG_MODE = new URLSearchParams(location.search).get('debug') === '1';
@@ -526,13 +535,34 @@ const CATS = [
   { key:'保險', color:'#22C7D6', icon:'🛡' },
   { key:'稅金', color:'#FFB13D', icon:'🏛' },
   { key:'罰單', color:'#FF5A47', icon:'🚨' },
+  { key:'停車費', color:'#7FD14A', icon:'🅿️' },
   { key:'其他', color:'#6B7690', icon:'📎' }
 ];
-const catColor = k => (CATS.find(c => c.key === k) || CATS[7]).color;
-const catIcon  = k => (CATS.find(c => c.key === k) || CATS[7]).icon;
-const normType = t => { const s=String(t||'其他').trim(); if(s==='保險/稅費')return'保險'; return CATS.some(c=>c.key===s)?s:'其他'; };
+const catColor = k => (CATS.find(c => c.key === k) || CATS[CATS.length-1]).color;
+const catIcon  = k => (CATS.find(c => c.key === k) || CATS[CATS.length-1]).icon;
+const normType = t => {
+  const s = String(t||'其他').trim();
+  if (s === '保險/稅費') return '保險';       // 舊資料相容
+  if (s === '停車' || s === '停車場') return '停車費';
+  return CATS.some(c=>c.key===s) ? s : '其他';
+};
+
+/* ── 圖表用的「六大項」分組 ──────────────────────────
+   細項(上方 CATS)用於逐筆紀錄的圖示;
+   圖表則彙總成大項,比例才看得清楚。 */
+const GROUPS = [
+  { key:'加油',        color:'#2D8CFF', members:['油錢'] },
+  { key:'保養維修耗材', color:'#8B3DFF', members:['保養','維修','耗材'] },
+  { key:'燃料牌照稅',   color:'#FFB13D', members:['稅金'] },
+  { key:'保費',        color:'#22C7D6', members:['保險'] },
+  { key:'停車費',      color:'#7FD14A', members:['停車費'] },
+  { key:'罰單',        color:'#FF5A47', members:['罰單'] },
+  { key:'其他',        color:'#6B7690', members:['其他'] }
+];
+const groupOf = cat => (GROUPS.find(g => g.members.includes(cat)) || GROUPS[GROUPS.length-1]).key;
 
 /* ===== 全域狀態 ===== */
+let currentFilter='all';   // 紀錄頁目前選的分類
 let DB = { vehicles:[], fuel:[], maint:[] };
 let charts = {};
 let pieRange = 'all';
@@ -768,8 +798,11 @@ function calcSegments(rows){
 /* ===== 支出彙整(當前車輛) ===== */
 function allExpenses(){
   const list=[];
-  fuelRows().forEach(r=>list.push({date:String(r['日期']),cat:'油錢',amount:Number(r['金額'])||0}));
-  maintRows().forEach(r=>list.push({date:String(r['日期']),cat:normType(r['類型']),amount:Number(r['金額'])||0}));
+  fuelRows().forEach(r=>list.push({date:String(r['日期']),cat:'油錢',grp:'加油',amount:Number(r['金額'])||0}));
+  maintRows().forEach(r=>{
+    const c = normType(r['類型']);
+    list.push({date:String(r['日期']),cat:c,grp:groupOf(c),amount:Number(r['金額'])||0});
+  });
   return list;
 }
 
@@ -842,7 +875,7 @@ function render(){
   $('#lifetimeKmpl').textContent = lt ? fmt1(lt) : '--';
 
   drawKmpl(segs); drawMonth(exp); drawKm(); drawYear(exp); drawPie(exp);
-  renderList('all');
+  renderList(currentFilter);
 }
 
 /* ===== 圖表 ===== */
@@ -920,8 +953,8 @@ function drawKmpl(segs){
 function drawMonth(exp){
   cd();
   let months = monthsFor(monthRange, earliestYm());
-  const used = CATS.filter(c=>exp.some(e=>e.cat===c.key));
-  const sumFor = (m,cat)=>exp.filter(e=>e.date.slice(0,7)===m&&e.cat===cat).reduce((a,e)=>a+e.amount,0);
+  const used = GROUPS.filter(g=>exp.some(e=>e.grp===g.key));
+  const sumFor = (m,grp)=>exp.filter(e=>e.date.slice(0,7)===m&&e.grp===grp).reduce((a,e)=>a+e.amount,0);
 
   // 月份超過 24 個就改按季彙總,避免柱子過密
   const useQuarter = months.length > 24;
@@ -1000,9 +1033,9 @@ function drawKm(){
 }
 function drawYear(exp){
   cd(); const years=[...new Set(exp.map(e=>e.date.slice(0,4)).filter(Boolean))].sort();
-  const used=CATS.filter(c=>exp.some(e=>e.cat===c.key));
+  const used=GROUPS.filter(g=>exp.some(e=>e.grp===g.key));
   const ds=used.map(c=>({label:c.key,backgroundColor:c.color,stack:'y',barPercentage:.55,borderRadius:{topLeft:3,topRight:3},
-    data:years.map(y=>exp.filter(e=>e.date.slice(0,4)===y&&e.cat===c.key).reduce((a,e)=>a+e.amount,0))}));
+    data:years.map(y=>exp.filter(e=>e.date.slice(0,4)===y&&e.grp===c.key).reduce((a,e)=>a+e.amount,0))}));
   reset('year');
   charts.year=new Chart($('#chartYear').getContext('2d'),{type:'bar',
     data:{labels:years.map(y=>y+' 年'),datasets:ds},
@@ -1013,7 +1046,7 @@ function drawYear(exp){
 function drawPie(exp){
   cd(); const yr=todayStr().slice(0,4);
   const src=pieRange==='year'?exp.filter(e=>e.date.slice(0,4)===yr):exp;
-  const sums=CATS.map(c=>({key:c.key,color:c.color,v:src.filter(e=>e.cat===c.key).reduce((a,e)=>a+e.amount,0)})).filter(x=>x.v>0);
+  const sums=GROUPS.map(g=>({key:g.key,color:g.color,v:src.filter(e=>e.grp===g.key).reduce((a,e)=>a+e.amount,0)})).filter(x=>x.v>0);
   const total=sums.reduce((a,x)=>a+x.v,0);
   $('#pieRange').textContent=pieRange==='year'?(yr+' 年'):'全期間';
   reset('pie');
@@ -1030,18 +1063,31 @@ $('#view-stats').querySelectorAll('[data-pie]').forEach(c=>{
 
 /* ===== 清單 ===== */
 document.querySelectorAll('[data-filter]').forEach(c=>{
-  c.addEventListener('click',()=>{ document.querySelectorAll('[data-filter]').forEach(x=>x.classList.remove('on')); c.classList.add('on'); renderList(c.dataset.filter); });
+  c.addEventListener('click',()=>{ document.querySelectorAll('[data-filter]').forEach(x=>x.classList.remove('on')); c.classList.add('on'); currentFilter=c.dataset.filter; renderList(currentFilter); });
 });
 function renderList(filter){
   const { segs }=calcSegments(fuelRows());
   const kmByKey={}; segs.forEach(x=>{kmByKey[String(x.date)]=x.kmpl;});
   let items=[];
-  if(filter!=='maint') items=items.concat(fuelRows().map(r=>({kind:'fuel',r})));
-  if(filter!=='fuel')  items=items.concat(maintRows().map(r=>({kind:'maint',r})));
+  // 依「六大項」篩選:加油屬於「加油」大項,其餘依類型對應
+  if(filter==='all'||filter==='加油') items=items.concat(fuelRows().map(r=>({kind:'fuel',r})));
+  if(filter!=='加油'){
+    items=items.concat(maintRows()
+      .filter(r=> filter==='all' || groupOf(normType(r['類型']))===filter)
+      .map(r=>({kind:'maint',r})));
+  }
   items.sort((a,b)=>String(b.r['日期']).localeCompare(String(a.r['日期']))||(Number(b.r['里程(km)'])||0)-(Number(a.r['里程(km)'])||0));
   const box=$('#recList');
-  if(!items.length){ box.innerHTML='<div class="empty">這台車還沒有紀錄。<br>到「加油」或「支出」新增第一筆吧!</div>'; return; }
-  box.innerHTML=items.map(function(it){
+  if(!items.length){ box.innerHTML='<div class="empty">此分類還沒有紀錄。<br>到「加油」或「支出」新增第一筆吧!</div>'; return; }
+
+  // 篩選中的小計列
+  const sum=items.reduce((a,it)=>a+(Number(it.r['金額'])||0),0);
+  const head='<div style="display:flex;justify-content:space-between;align-items:baseline;'+
+    'padding:0 4px 12px;font-size:12.5px;color:var(--muted)">'+
+    '<span>'+(filter==='all'?'全部':filter)+' · '+items.length+' 筆</span>'+
+    '<span style="font-family:var(--num);font-size:15px;color:var(--text);font-weight:600">NT$'+fmt(sum)+'</span></div>';
+
+  box.innerHTML=head+items.map(function(it){
     const r=it.r;
     if(it.kind==='fuel'){
       const k=(r['是否加滿']==='是'&&kmByKey[String(r['日期'])])?'<div class="kmpl">▲ '+fmt1(kmByKey[String(r['日期'])])+' km/L</div>':'';
@@ -1063,10 +1109,10 @@ function autoAmount(){ const L=parseFloat($('#f-liters').value),P=parseFloat($('
 $('#f-liters').addEventListener('input',autoAmount);
 $('#f-price').addEventListener('input',autoAmount);
 $('#m-type').addEventListener('change',()=>{
-  const t=$('#m-type').value; const noOdo=['稅金','罰單','保險'].includes(t);
+  const t=$('#m-type').value; const noOdo=['稅金','罰單','保險','停車費'].includes(t);
   $('#odoHint').textContent=noOdo?'這類支出通常不用填里程':'保養維修建議填,方便算下次週期';
-  $('#shopLabel').textContent=t==='罰單'?'開單機關(選填)':t==='保險'?'保險公司(選填)':t==='稅金'?'繳費管道(選填)':'店家(選填)';
-  $('#m-item').placeholder=t==='罰單'?'例:超速 10km/h 以內':t==='保險'?'例:乙式車體險 續保':t==='稅金'?'例:牌照稅 / 燃料費':'例:機油+機油芯更換';
+  $('#shopLabel').textContent=t==='罰單'?'開單機關(選填)':t==='保險'?'保險公司(選填)':t==='稅金'?'繳費管道(選填)':t==='停車費'?'停車場/地點(選填)':'店家(選填)';
+  $('#m-item').placeholder=t==='罰單'?'例:超速 10km/h 以內':t==='保險'?'例:乙式車體險 續保':t==='稅金'?'例:牌照稅 / 燃料費':t==='停車費'?'例:停車紀錄加總':'例:機油+機油芯更換';
 });
 
 /* ===== 新增車輛 modal ===== */
