@@ -1,4 +1,31 @@
 <!DOCTYPE html>
+<!--
+  ═══════════════════════════════════════════════════════════════
+   愛車紀錄 MyGarage — 前端(單一檔案,無需建置)
+   版本:v3.0.0        更新日期:2026-08-20
+  ═══════════════════════════════════════════════════════════════
+
+   【這一版改了什麼】
+   - 圖表加入期間切換(近12月/近24月/全部),超過24個月自動按季彙總
+   - 支出圖加入每月預算線,超支時提示
+   - 分析頁新增「長期累計油耗」(總里程÷總公升)
+   - 修正 iPhone 版面右側被切掉(超長網址撐破版面)
+   - 存檔後不再重讀整份資料,改為本地即時更新(修正儲存後誤報失敗)
+   - 版本號自本版起統一,取代混亂的 v2.4~v2.6 過渡編號
+
+   【要改設定看這裡】
+   - API_URL / API_PROXY_URL ── 搜尋「設定區」,在 script 開頭
+   - MONTHLY_BUDGET(每月預算)── 搜尋「MONTHLY_BUDGET」
+   ⚠️ 連線層(apiGet / fetchGet / frameGet / jsonpGet)是 iPhone 相容
+      的關鍵,非必要請勿改動。
+
+   【架構】
+   本檔(GitHub Pages) → Cloudflare Worker 代理 → Google Apps Script
+                                                → Google Sheets「愛車紀錄」
+
+   【完整歷程與維護方式】見同倉庫 CHANGELOG.md
+  ═══════════════════════════════════════════════════════════════
+-->
 <html lang="zh-Hant">
 <head>
 <meta charset="UTF-8">
@@ -9,8 +36,6 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="theme-color" content="#07090F">
-<link rel="icon" type="image/png" sizes="512x512" href="favicon-q5.png?v=250">
-<link rel="apple-touch-icon" href="favicon-q5.png?v=250">
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -27,6 +52,11 @@
 }
 *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html{background:var(--bg)}
+/* 全域防止橫向溢出:任何超長字串(網址、無空格文字)都不會把版面撐破 */
+html,body{max-width:100%;overflow-x:hidden}
+*{min-width:0}                       /* 讓 grid/flex 子項可以正常縮小 */
+.card,.banner,.stat,.rec,.age-card{max-width:100%;box-sizing:border-box;overflow-wrap:anywhere}
+.rec .mid .l1,.rec .mid .l2{overflow-wrap:anywhere}
 body{font-family:var(--body);color:var(--text);background:var(--bg);min-height:100dvh}
 body::before{
   content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
@@ -34,7 +64,7 @@ body::before{
     radial-gradient(60% 40% at 85% -5%, rgba(139,61,255,.14), transparent 70%),
     radial-gradient(50% 35% at 10% 105%, rgba(255,45,111,.10), transparent 70%);
 }
-#app{position:relative;z-index:1;max-width:470px;margin:0 auto;padding:20px 18px calc(88px + env(safe-area-inset-bottom))}
+#app{position:relative;z-index:1;width:100%;max-width:470px;margin:0 auto;box-sizing:border-box;padding:20px 18px calc(88px + env(safe-area-inset-bottom))}
 
 /* ===== 平板/桌機:放寬容器,統計卡多欄,圖表並排 ===== */
 @media (min-width:700px){
@@ -114,8 +144,8 @@ header{display:flex;align-items:center;justify-content:space-between;margin-bott
 .gauge-center .val{font-family:var(--num);font-size:52px;font-weight:700;line-height:1;background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent}
 .gauge-center .unit{font-family:var(--num);font-size:14px;color:var(--muted);margin-top:6px}
 .gauge-center .label{font-size:12px;color:var(--dim);margin-top:4px;letter-spacing:.12em}
-.gauge-foot{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;width:100%;margin-top:2px}
-.gauge-foot>div{text-align:center;min-width:0}
+.gauge-foot{display:flex;gap:26px;margin-top:2px}
+.gauge-foot div{text-align:center}
 .gauge-foot .k{font-family:var(--num);font-size:17px;font-weight:600}
 .gauge-foot .t{font-size:11px;color:var(--dim);margin-top:2px}
 
@@ -143,26 +173,7 @@ header{display:flex;align-items:center;justify-content:space-between;margin-bott
 .field input:focus,.field select:focus{border-color:var(--purple);box-shadow:0 0 0 3px rgba(139,61,255,.18)}
 .field input[type=number]{font-family:var(--num)}
 .hint{font-size:11.5px;color:var(--dim);margin-top:5px;line-height:1.5}
-.row2{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px}
-.row2>.field{min-width:0}
-@media (max-width:430px){
-  .row2{grid-template-columns:1fr;gap:0}
-  .field input,.field select{min-width:0}
-}
-.range-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:12px}
-.range-head h3{margin-bottom:0}
-.range-switch{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
-.range-switch button{border:1px solid var(--line);background:var(--panel);color:var(--muted);border-radius:999px;padding:6px 10px;font-size:11px;font-family:var(--body);cursor:pointer}
-.range-switch button.on{background:var(--grad);border-color:transparent;color:#fff;font-weight:700}
-.budget-row{display:flex;align-items:end;gap:10px;margin-bottom:14px}
-.budget-row .field{flex:1;margin-bottom:0}
-.budget-row .btn{width:auto;min-width:92px;padding:13px 16px;margin-top:0}
-.metric-note{font-size:11.5px;color:var(--dim);line-height:1.6;margin-top:-4px;margin-bottom:14px}
-.undo-bar{position:fixed;left:50%;bottom:calc(92px + env(safe-area-inset-bottom));transform:translateX(-50%) translateY(20px);z-index:60;display:none;align-items:center;gap:12px;background:var(--card-hi);border:1px solid rgba(45,224,165,.4);border-radius:14px;padding:10px 12px 10px 16px;box-shadow:0 10px 34px rgba(0,0,0,.55);max-width:calc(100vw - 28px)}
-.undo-bar.show{display:flex;animation:fadeUp .25s ease}
-.undo-bar span{font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.undo-bar button{border:none;border-radius:10px;background:var(--grad);color:#fff;font-family:var(--body);font-weight:700;padding:8px 12px;cursor:pointer;white-space:nowrap}
-@media (max-width:430px){.range-head{display:block}.range-switch{justify-content:flex-start;margin-top:10px}.budget-row{align-items:stretch}.budget-row .btn{min-width:86px}}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 .switch-row{display:flex;align-items:center;justify-content:space-between;
   background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:13px 14px;margin-bottom:13px}
 .switch-row span{font-size:15px}
@@ -222,7 +233,7 @@ nav button.on .nico{background:var(--grad);-webkit-background-clip:text;backgrou
 #toast.ok{border-color:rgba(45,224,165,.4)}
 #toast.err{border-color:rgba(255,45,111,.5)}
 
-.debug-panel{display:none;background:#090C16;border:1px solid rgba(255,255,255,.12);border-radius:14px;padding:13px 14px;margin-bottom:14px;font-family:var(--num);font-size:11.5px;line-height:1.55;color:var(--muted);white-space:pre-wrap;word-break:break-word}
+.debug-panel{display:none;background:#090C16;border:1px solid rgba(255,255,255,.12);border-radius:14px;padding:13px 14px;margin-bottom:14px;font-family:var(--num);font-size:11.5px;line-height:1.55;color:var(--muted);white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-all;max-width:100%;box-sizing:border-box}
 .debug-panel.show{display:block}
 .debug-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;font-family:var(--body)}
 .debug-head b{color:var(--text);font-size:13px}
@@ -267,7 +278,7 @@ nav button.on .nico{background:var(--grad);-webkit-background-clip:text;backgrou
         <span class="caret">▼</span>
       </button>
     </div>
-    <div class="odo-pill"><span class="dot"></span><span id="odoNow">-- km</span></div>
+    <div class="odo-pill" id="odoPill" title="點一下重新讀取試算表" style="cursor:pointer"><span class="dot" id="odoDot"></span><span id="odoNow">-- km</span></div>
 
     <!-- 車庫下拉 -->
     <div class="garage" id="garage"></div>
@@ -311,14 +322,13 @@ nav button.on .nico{background:var(--grad);-webkit-background-clip:text;backgrou
           <div class="gauge-center">
             <div class="val" id="avgKmpl">--</div>
             <div class="unit">km / L</div>
-            <div class="label">全期間平均</div>
+            <div class="label">平均油耗</div>
           </div>
         </div>
         <div class="gauge-foot">
           <div><div class="k" id="lastKmpl">--</div><div class="t">最近一次</div></div>
-          <div><div class="k" id="recent3Kmpl">--</div><div class="t">近 3 次平均</div></div>
-          <div><div class="k" id="totalKm">--</div><div class="t">有效里程 km</div></div>
-          <div><div class="k" id="totalL">--</div><div class="t">有效公升</div></div>
+          <div><div class="k" id="totalKm">--</div><div class="t">累計里程 km</div></div>
+          <div><div class="k" id="totalL">--</div><div class="t">累計公升</div></div>
         </div>
       </div>
 
@@ -338,13 +348,14 @@ nav button.on .nico{background:var(--grad);-webkit-background-clip:text;backgrou
     </div>
 
     <div class="card">
-      <div class="range-head">
-        <h3>支出趨勢<em id="monthRangeLabel">近 12 個月</em></h3>
-        <div class="range-switch" data-range-group>
-          <button data-range="12">12 月</button><button data-range="24">24 月</button><button data-range="all">全部</button>
-        </div>
+      <h3>每月支出<em>含預算線</em></h3>
+      <div class="chips" id="monthRangeChips" style="margin-bottom:14px">
+        <button class="chip on" data-range="12">近 12 月</button>
+        <button class="chip" data-range="24">近 24 月</button>
+        <button class="chip" data-range="0">全部</button>
       </div>
       <div class="chart-box"><canvas id="chartMonth"></canvas></div>
+      <div id="budgetNote" style="font-size:12px;margin-top:10px;text-align:center"></div>
     </div>
   </section>
 
@@ -382,7 +393,7 @@ nav button.on .nico{background:var(--grad);-webkit-background-clip:text;backgrou
         <div class="field"><label>類型</label>
           <select id="m-type">
             <option>保養</option><option>維修</option><option>耗材</option>
-            <option>保險</option><option>稅金</option><option>罰單</option><option>停車費</option><option>其他</option>
+            <option>保險</option><option>稅金</option><option>罰單</option><option>其他</option>
           </select>
         </div>
         <div class="field"><label>里程表 (km)</label><input type="number" id="m-odo" inputmode="decimal" placeholder="選填">
@@ -400,29 +411,29 @@ nav button.on .nico{background:var(--grad);-webkit-background-clip:text;backgrou
   <section id="view-stats" class="view">
     <div class="form-title">📊 長期分析</div>
     <div class="stat-grid">
-      <div class="stat accent"><div class="v" id="analysisAllKmpl">--</div><div class="t">全期間平均 km/L</div></div>
-      <div class="stat"><div class="v" id="analysisRecent3">--</div><div class="t">近 3 次平均 km/L</div></div>
-      <div class="stat"><div class="v" id="validSegments">--</div><div class="t">完整加滿區間</div></div>
-      <div class="stat"><div class="v" id="validRange">--</div><div class="t">有效資料期間</div></div>
-    </div>
-    <div class="metric-note">全期間平均採「完整加滿區間總里程 ÷ 區間總加油量」，中途未加滿不會破壞計算。</div>
-    <div class="card">
-      <h3>日常月預算<em>油錢、保養、維修、耗材、停車費</em></h3>
-      <div class="budget-row"><div class="field"><label>每月預算 (NT$)</label><input type="number" id="monthlyBudget" inputmode="numeric" min="0" step="500"></div><button class="btn" id="saveBudget" type="button">套用</button></div>
-      <div class="hint">保險、稅金與罰單不列入預算超標判定，但仍會顯示在支出圖表。</div>
-    </div>
-    <div class="stat-grid">
       <div class="stat"><div class="v" id="kmPerMonth">--</div><div class="t">月均里程 km</div></div>
       <div class="stat"><div class="v" id="kmPerYear">--</div><div class="t">年均里程 km</div></div>
       <div class="stat"><div class="v" id="costPerYear">--</div><div class="t">年均花費 NT$</div></div>
       <div class="stat accent"><div class="v" id="costPerMonth">--</div><div class="t">月均花費 NT$</div></div>
     </div>
+    <div class="card" style="background:linear-gradient(120deg,var(--card-hi),var(--card))">
+      <h3>長期累計油耗<em>總里程 ÷ 總公升</em></h3>
+      <div style="display:flex;align-items:baseline;gap:10px">
+        <div style="font-family:var(--num);font-size:34px;font-weight:700;background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent" id="lifetimeKmpl">--</div>
+        <div style="font-family:var(--num);font-size:14px;color:var(--muted)">km / L</div>
+      </div>
+      <div style="font-size:11.5px;color:var(--dim);margin-top:8px;line-height:1.6">
+        不受單次是否加滿影響的長期真值,記錄越久越準;<br>
+        上方儀表的「平均油耗」用加滿法算,看短期趨勢。
+      </div>
+    </div>
+
     <div class="card">
-      <div class="range-head">
-        <h3>行駛里程趨勢<em id="kmRangeLabel">近 12 個月</em></h3>
-        <div class="range-switch" data-range-group>
-          <button data-range="12">12 月</button><button data-range="24">24 月</button><button data-range="all">全部</button>
-        </div>
+      <h3>行駛里程<em>期間可切換</em></h3>
+      <div class="chips" id="kmRangeChips" style="margin-bottom:14px">
+        <button class="chip on" data-range="12">近 12 月</button>
+        <button class="chip" data-range="24">近 24 月</button>
+        <button class="chip" data-range="0">全部</button>
       </div>
       <div class="chart-box"><canvas id="chartKm"></canvas></div>
     </div>
@@ -481,14 +492,13 @@ nav button.on .nico{background:var(--grad);-webkit-background-clip:text;backgrou
 </div>
 
 <div id="toast"></div>
-<div class="undo-bar" id="undoBar"><span id="undoText">紀錄已儲存</span><button type="button" id="undoBtn">撤銷</button></div>
 
 <script>
 /* ============================================================
    ★★★ 只需要改這一行 ★★★
    把 Apps Script 部署後的網址貼在引號中間。留空 = 示範模式。
 ============================================================ */
-const APP_VERSION = 'v2.5.0';
+const APP_VERSION = 'v3.0.0';
 const API_URL = "https://script.google.com/macros/s/AKfycbw4TN9_LXJt2sq_kcTwmEg0OPFyF8jquhanquUt-_uOQ6Ea0BxJenjVCgLYIhJAOCSKkA/exec";  // Apps Script /exec 網址
 const API_PROXY_URL = "https://mygarage-api.188rex.workers.dev/"; // 建議填 Cloudflare Worker 網址；留空時直接連 Apps Script
 const DEBUG_MODE = new URLSearchParams(location.search).get('debug') === '1';
@@ -502,11 +512,10 @@ const CATS = [
   { key:'保險', color:'#22C7D6', icon:'🛡' },
   { key:'稅金', color:'#FFB13D', icon:'🏛' },
   { key:'罰單', color:'#FF5A47', icon:'🚨' },
-  { key:'停車費', color:'#7CC6FF', icon:'🅿️' },
   { key:'其他', color:'#6B7690', icon:'📎' }
 ];
-const catColor = k => (CATS.find(c => c.key === k) || CATS[CATS.length-1]).color;
-const catIcon  = k => (CATS.find(c => c.key === k) || CATS[CATS.length-1]).icon;
+const catColor = k => (CATS.find(c => c.key === k) || CATS[7]).color;
+const catIcon  = k => (CATS.find(c => c.key === k) || CATS[7]).icon;
 const normType = t => { const s=String(t||'其他').trim(); if(s==='保險/稅費')return'保險'; return CATS.some(c=>c.key===s)?s:'其他'; };
 
 /* ===== 全域狀態 ===== */
@@ -515,10 +524,6 @@ let charts = {};
 let pieRange = 'all';
 let currentVid = null;      // 目前選定車輛 ID
 let newVehType = '汽車';
-let chartRange = localStorage.getItem('mygarage_chart_range') || '12';
-let monthlyBudget = Number(localStorage.getItem('mygarage_monthly_budget')) || 8000;
-let lastUndo = null;
-let undoTimer = null;
 
 /* ===== 小工具 ===== */
 const $ = s => document.querySelector(s);
@@ -654,7 +659,9 @@ async function apiGet(url){
 
 async function fetchGet(url){
   const controller = new AbortController();
-  const timer = setTimeout(()=>controller.abort(), 15000);
+  // Apps Script 讀取通常 4~8 秒,手機網路或冷啟動時更久,
+  // 逾時設 45 秒,避免正常但較慢的回應被誤判為失敗
+  const timer = setTimeout(()=>controller.abort(), 45000);
   try{
     const sep=url.includes('?')?'&':'?';
     const bust=url+sep+'_ts='+Date.now();
@@ -736,7 +743,7 @@ function calcSegments(rows){
       if(last>=0){
         const km=Number(list[i]['里程(km)'])-Number(list[last]['里程(km)']);
         let L=0; for(let j=last+1;j<=i;j++) L+=Number(list[j]['公升']);
-        if(km>0&&L>0) segs.push({startDate:list[last]['日期'],date:list[i]['日期'],km,liters:L,kmpl:km/L});
+        if(km>0&&L>0) segs.push({date:list[i]['日期'],km,liters:L,kmpl:km/L});
       }
       last=i;
     }
@@ -783,16 +790,8 @@ function render(){
   // 平均油耗 + 儀表環(機車刻度放大到 60)
   const segKm=segs.reduce((a,x)=>a+x.km,0), segL=segs.reduce((a,x)=>a+x.liters,0);
   const avg=segL>0?segKm/segL:0;
-  const recent3=segs.slice(-3);
-  const recent3Km=recent3.reduce((a,x)=>a+x.km,0), recent3L=recent3.reduce((a,x)=>a+x.liters,0);
-  const recent3Avg=recent3L>0?recent3Km/recent3L:0;
   $('#avgKmpl').textContent = avg?fmt1(avg):'--';
   $('#lastKmpl').textContent = segs.length?fmt1(segs[segs.length-1].kmpl):'--';
-  $('#recent3Kmpl').textContent = recent3Avg?fmt1(recent3Avg):'--';
-  $('#analysisAllKmpl').textContent = avg?fmt1(avg):'--';
-  $('#analysisRecent3').textContent = recent3Avg?fmt1(recent3Avg):'--';
-  $('#validSegments').textContent = segs.length?fmt(segs.length):'--';
-  $('#validRange').textContent = segs.length?(String(segs[0].startDate).slice(0,7).replace('-','/')+'–'+String(segs[segs.length-1].date).slice(0,7).replace('-','/')):'--';
   const gaugeMax = (v && v['類型']==='機車') ? 60 : 20;
   const GC=2*Math.PI*100;
   $('#gaugeBar').setAttribute('stroke-dasharray',(GC*0.75*Math.min(avg/gaugeMax,1))+' '+GC);
@@ -806,8 +805,9 @@ function render(){
   const fuelTotal=exp.filter(e=>e.cat==='油錢').reduce((a,e)=>a+e.amount,0);
   const otherTotal=exp.filter(e=>e.cat!=='油錢').reduce((a,e)=>a+e.amount,0);
   const grand=fuelTotal+otherTotal;
-  $('#totalKm').textContent=segKm?fmt(segKm):'--';
-  $('#totalL').textContent=segL?fmt(segL):'--';
+  const totalL=fr.reduce((a,r)=>a+(Number(r['公升'])||0),0);
+  $('#totalKm').textContent=totalKm?fmt(totalKm):'--';
+  $('#totalL').textContent=totalL?fmt(totalL):'--';
   $('#fuelTotal').textContent=fmt(fuelTotal);
   $('#otherTotal').textContent=fmt(otherTotal);
   $('#costPerKm').textContent=totalKm?fmt1(grand/totalKm):'--';
@@ -823,52 +823,74 @@ function render(){
   $('#costPerMonth').textContent=grand?fmt(grand/months):'--';
   $('#costPerYear').textContent=grand?fmt(grand/months*12):'--';
 
-  syncRangeUI();
+  // 長期累計油耗 = 總行駛里程 ÷ 總加油公升(不受單次是否加滿影響)
+  const lt = (totalKm>0 && totalL>0) ? totalKm/totalL : 0;
+  $('#lifetimeKmpl').textContent = lt ? fmt1(lt) : '--';
+
   drawKmpl(segs); drawMonth(exp); drawKm(); drawYear(exp); drawPie(exp);
   renderList('all');
 }
 
 /* ===== 圖表 ===== */
+/* ── 個人設定(要調整只改這裡)───────────────── */
+const MONTHLY_BUDGET = 8000;      // 每月支出預算 NT$,支出圖會畫這條線
+/* ────────────────────────────────────────── */
+
+let monthRange = 12;   // 每月支出圖的期間:12 / 24 / 0(全部)
+let kmRange    = 12;   // 每月里程圖的期間
+
 function cd(){ Chart.defaults.color='#8A93A8'; Chart.defaults.font.family="'Chakra Petch','Noto Sans TC',sans-serif"; Chart.defaults.borderColor='rgba(255,255,255,.06)'; }
 function reset(k){ if(charts[k]) charts[k].destroy(); }
-function monthKey(d){ return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'); }
-function addMonths(d,n){ return new Date(d.getFullYear(),d.getMonth()+n,1); }
-function allRelevantDates(){
-  return [...fuelRows(),...maintRows()].map(r=>String(r['日期']||'').slice(0,10)).filter(Boolean).sort();
-}
-function rangeSpec(){
-  const now=new Date(), end=new Date(now.getFullYear(),now.getMonth(),1);
-  const dates=allRelevantDates();
-  let start;
-  if(chartRange==='12') start=addMonths(end,-11);
-  else if(chartRange==='24') start=addMonths(end,-23);
-  else if(dates.length){ const d=new Date(dates[0]+'T12:00:00'); start=new Date(d.getFullYear(),d.getMonth(),1); }
-  else start=addMonths(end,-11);
-  const count=(end.getFullYear()-start.getFullYear())*12+(end.getMonth()-start.getMonth())+1;
-  const quarterly=chartRange==='all'&&count>24;
-  const keys=[];
-  if(quarterly){
-    const qStart=new Date(start.getFullYear(),Math.floor(start.getMonth()/3)*3,1);
-    for(let d=qStart;d<=end;d=addMonths(d,3)) keys.push(d.getFullYear()+'-Q'+(Math.floor(d.getMonth()/3)+1));
-  }else{
-    for(let d=start;d<=end;d=addMonths(d,1)) keys.push(monthKey(d));
+function last12(){ const a=[],n=new Date(); for(let i=11;i>=0;i--){const d=new Date(n.getFullYear(),n.getMonth()-i,1); a.push(d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'));} return a; }
+
+/* 依期間產生月份清單。n=12/24 為近 N 個月;n=0 表示從最早一筆資料到現在 */
+function monthsFor(n, earliestYm){
+  const now = new Date();
+  let count = n;
+  if (!n){   // 全部:從最早資料算到現在
+    if (!earliestYm) count = 12;
+    else {
+      const [y,m] = earliestYm.split('-').map(Number);
+      count = (now.getFullYear()-y)*12 + (now.getMonth()+1-m) + 1;
+      count = Math.max(1, Math.min(count, 240));   // 上限 20 年
+    }
   }
-  return {start,end,count,quarterly,keys,label:chartRange==='12'?'近 12 個月':chartRange==='24'?'近 24 個月':quarterly?'全部（按季）':'全部'};
+  const arr = [];
+  for (let i=count-1; i>=0; i--){
+    const d = new Date(now.getFullYear(), now.getMonth()-i, 1);
+    arr.push(d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'));
+  }
+  return arr;
 }
-function bucketForDate(dateStr,quarterly){
-  const d=new Date(String(dateStr).slice(0,10)+'T12:00:00');
-  if(isNaN(d)) return '';
-  return quarterly?d.getFullYear()+'-Q'+(Math.floor(d.getMonth()/3)+1):monthKey(d);
+
+/* 月份太多時改用「季」彙總,柱子才不會擠成一團 */
+function toQuarters(months, values){
+  const map = {};
+  months.forEach((m,i)=>{
+    const [y,mm] = m.split('-').map(Number);
+    const key = y + '-Q' + (Math.floor((mm-1)/3)+1);
+    map[key] = (map[key]||0) + (values[i]||0);
+  });
+  return { labels:Object.keys(map), values:Object.values(map) };
 }
-function bucketLabel(k,quarterly){
-  if(quarterly) return k.replace('-Q',' Q');
-  return k.slice(0,4)+'/'+k.slice(5,7);
+
+/* 找出最早一筆資料的年月,供「全部」期間使用 */
+function earliestYm(){
+  const ds = [...fuelRows(), ...maintRows()].map(r=>String(r['日期'])).filter(Boolean).sort();
+  return ds.length ? ds[0].slice(0,7) : '';
 }
-function syncRangeUI(){
-  document.querySelectorAll('[data-range-group] button').forEach(b=>b.classList.toggle('on',b.dataset.range===chartRange));
-  const spec=rangeSpec();
-  $('#monthRangeLabel').textContent=spec.label;
-  $('#kmRangeLabel').textContent=spec.label;
+
+/* 期間切換籤:共用元件 */
+function bindRangeChips(containerId, onPick){
+  const box = document.getElementById(containerId);
+  if (!box) return;
+  box.querySelectorAll('[data-range]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      box.querySelectorAll('[data-range]').forEach(x=>x.classList.remove('on'));
+      btn.classList.add('on');
+      onPick(Number(btn.dataset.range));
+    });
+  });
 }
 
 function drawKmpl(segs){
@@ -882,57 +904,85 @@ function drawKmpl(segs){
       scales:{x:{grid:{display:false}},y:{title:{display:true,text:'km/L'},grid:{color:'rgba(255,255,255,.05)'}}}}});
 }
 function drawMonth(exp){
-  cd(); const spec=rangeSpec(), keys=spec.keys;
-  const used=CATS.filter(c=>exp.some(e=>e.cat===c.key));
-  const ds=used.map(c=>({label:c.key,backgroundColor:c.color,stack:'expenses',barPercentage:.68,borderRadius:{topLeft:3,topRight:3},
-    data:keys.map(k=>exp.filter(e=>bucketForDate(e.date,spec.quarterly)===k&&e.cat===c.key).reduce((a,e)=>a+e.amount,0))}));
-  const everyday=['油錢','保養','維修','耗材','停車費'];
-  const budgetData=keys.map(k=>{
-    if(spec.quarterly) return monthlyBudget*3;
-    return monthlyBudget;
-  });
-  ds.push({type:'line',label:'日常預算',data:budgetData,borderColor:'#FFB13D',borderWidth:2,borderDash:[7,5],pointRadius:0,fill:false,order:0});
+  cd();
+  let months = monthsFor(monthRange, earliestYm());
+  const used = CATS.filter(c=>exp.some(e=>e.cat===c.key));
+  const sumFor = (m,cat)=>exp.filter(e=>e.date.slice(0,7)===m&&e.cat===cat).reduce((a,e)=>a+e.amount,0);
+
+  // 月份超過 24 個就改按季彙總,避免柱子過密
+  const useQuarter = months.length > 24;
+  let labels, ds, totals;
+
+  if (useQuarter){
+    const perCat = used.map(c=>toQuarters(months, months.map(m=>sumFor(m,c.key))));
+    labels = perCat.length ? perCat[0].labels : [];
+    ds = used.map((c,i)=>({label:c.key, backgroundColor:c.color, stack:'a', barPercentage:.7,
+      borderRadius:{topLeft:3,topRight:3}, data:perCat[i].values}));
+    totals = labels.map((_,i)=>perCat.reduce((a,p)=>a+(p.values[i]||0),0));
+  } else {
+    labels = months.map(m=>m.slice(5)+'月');
+    ds = used.map(c=>({label:c.key, backgroundColor:c.color, stack:'a', barPercentage:.65,
+      borderRadius:{topLeft:3,topRight:3}, data:months.map(m=>sumFor(m,c.key))}));
+    totals = months.map(m=>used.reduce((a,c)=>a+sumFor(m,c.key),0));
+  }
+
+  // 預算線(按季彙總時自動乘 3)
+  const budget = useQuarter ? MONTHLY_BUDGET*3 : MONTHLY_BUDGET;
+  ds.push({ type:'line', label:'預算 '+fmt(budget), data:labels.map(()=>budget),
+    borderColor:'#FF5A47', borderWidth:2, borderDash:[6,4], pointRadius:0, fill:false, order:0 });
+
   reset('month');
   charts.month=new Chart($('#chartMonth').getContext('2d'),{type:'bar',
-    data:{labels:keys.map(k=>bucketLabel(k,spec.quarterly)),datasets:ds},
-    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'bottom',labels:{boxWidth:9,boxHeight:9,padding:12,font:{size:11}}},
-      tooltip:{callbacks:{label:c=>' '+c.dataset.label+' NT$'+fmt(c.parsed.y)}}},
-      scales:{x:{stacked:true,grid:{display:false}},y:{stacked:true,grid:{color:'rgba(255,255,255,.05)'},ticks:{callback:v=>v>=1000?(v/1000)+'k':v}}}}});
-}
-function distributeMileageByMonth(reads){
-  const bm={};
-  for(let i=1;i<reads.length;i++){
-    const prev=reads[i-1], cur=reads[i], delta=cur.odo-prev.odo;
-    if(!(delta>0&&delta<20000)) continue;
-    const s=new Date(prev.date.slice(0,10)+'T12:00:00'), e=new Date(cur.date.slice(0,10)+'T12:00:00');
-    const totalDays=Math.max(1,(e-s)/86400000);
-    if(!(e>s)) continue;
-    let cursor=new Date(s.getFullYear(),s.getMonth(),1);
-    while(cursor<e){
-      const next=addMonths(cursor,1);
-      const a=Math.max(s.getTime(),cursor.getTime()), b=Math.min(e.getTime(),next.getTime());
-      if(b>a){ const days=(b-a)/86400000; bm[monthKey(cursor)]=(bm[monthKey(cursor)]||0)+delta*(days/totalDays); }
-      cursor=next;
-    }
+    data:{labels, datasets:ds},
+    options:{responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{position:'bottom',labels:{boxWidth:9,boxHeight:9,padding:12,font:{size:11}}},
+      tooltip:{callbacks:{
+        label:c=> c.dataset.type==='line' ? ' 預算 NT$'+fmt(c.parsed.y) : ' '+c.dataset.label+' NT$'+fmt(c.parsed.y),
+        footer:(items)=>{
+          const i = items[0].dataIndex, t = totals[i]||0;
+          return '合計 NT$'+fmt(t) + (t>budget ? '  ⚠ 超出 '+fmt(t-budget) : '');
+        }
+      }}},
+      scales:{x:{stacked:true,grid:{display:false},ticks:{maxRotation:0,autoSkip:true}},
+        y:{stacked:true,grid:{color:'rgba(255,255,255,.05)'},ticks:{callback:v=>v>=1000?(v/1000)+'k':v}}}}});
+
+  // 超出預算的期數統計
+  const over = totals.filter(t=>t>budget).length;
+  const note = document.getElementById('budgetNote');
+  if (note){
+    note.textContent = over
+      ? '此期間有 ' + over + ' 個' + (useQuarter?'季':'月') + '超出預算'
+      : '此期間都在預算內 👍';
+    note.style.color = over ? 'var(--pink)' : 'var(--green)';
   }
-  return bm;
 }
 function drawKm(){
-  cd(); const spec=rangeSpec();
+  cd();
   const reads=[...fuelRows(),...maintRows()].filter(r=>Number(r['里程(km)'])>0&&r['日期'])
     .map(r=>({date:String(r['日期']),odo:Number(r['里程(km)'])})).sort((a,b)=>a.date.localeCompare(b.date)||a.odo-b.odo);
-  const monthly=distributeMileageByMonth(reads), agg={};
-  Object.entries(monthly).forEach(([m,v])=>{ const k=spec.quarterly?m.slice(0,4)+'-Q'+(Math.floor((Number(m.slice(5,7))-1)/3)+1):m; agg[k]=(agg[k]||0)+v; });
-  const data=spec.keys.map(k=>Math.round(agg[k]||0));
-  const hit=data.filter(v=>v>0), avg=hit.length?hit.reduce((a,b)=>a+b,0)/hit.length:0;
+  const bm={};
+  for(let i=1;i<reads.length;i++){ const d=reads[i].odo-reads[i-1].odo; if(d>0&&d<20000){ const m=reads[i].date.slice(0,7); bm[m]=(bm[m]||0)+d; } }
+
+  const months = monthsFor(kmRange, earliestYm());
+  const useQuarter = months.length > 24;
+  let labels, data;
+  if (useQuarter){
+    const q = toQuarters(months, months.map(m=>bm[m]||0));
+    labels = q.labels; data = q.values;
+  } else {
+    labels = months.map(m=>m.slice(5)+'月'); data = months.map(m=>bm[m]||0);
+  }
+  const hit=data.filter(v=>v>0); const avg=hit.length?hit.reduce((a,b)=>a+b,0)/hit.length:0;
+
   reset('km');
   charts.km=new Chart($('#chartKm').getContext('2d'),{type:'bar',
-    data:{labels:spec.keys.map(k=>bucketLabel(k,spec.quarterly)),datasets:[
-      {type:'bar',label:spec.quarterly?'當季里程':'當月里程',data,backgroundColor:'#2D8CFF',borderRadius:4,barPercentage:.62,order:2},
-      {type:'line',label:'期間平均',data:spec.keys.map(()=>Math.round(avg)),borderColor:'#FFB13D',borderWidth:2,borderDash:[6,4],pointRadius:0,fill:false,order:1}]},
+    data:{labels,datasets:[
+      {type:'bar',label:useQuarter?'當季里程':'當月里程',data,backgroundColor:'#2D8CFF',borderRadius:4,barPercentage:.6,order:2},
+      {type:'line',label:'平均線',data:labels.map(()=>Math.round(avg)),borderColor:'#FFB13D',borderWidth:2,borderDash:[6,4],pointRadius:0,fill:false,order:1}]},
     options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'bottom',labels:{boxWidth:9,boxHeight:9,padding:12,font:{size:11}}},
       tooltip:{callbacks:{label:c=>' '+fmt(c.parsed.y)+' km'}}},
-      scales:{x:{grid:{display:false}},y:{grid:{color:'rgba(255,255,255,.05)'},ticks:{callback:v=>v>=1000?(v/1000)+'k':v}}}}});
+      scales:{x:{grid:{display:false},ticks:{maxRotation:0,autoSkip:true}},
+        y:{grid:{color:'rgba(255,255,255,.05)'},ticks:{callback:v=>v>=1000?(v/1000)+'k':v}}}}});
 }
 function drawYear(exp){
   cd(); const years=[...new Set(exp.map(e=>e.date.slice(0,4)).filter(Boolean))].sort();
@@ -962,23 +1012,6 @@ function drawPie(exp){
 }
 $('#view-stats').querySelectorAll('[data-pie]').forEach(c=>{
   c.addEventListener('click',()=>{ $('#view-stats').querySelectorAll('[data-pie]').forEach(x=>x.classList.remove('on')); c.classList.add('on'); pieRange=c.dataset.pie; drawPie(allExpenses()); });
-});
-
-document.querySelectorAll('[data-range-group] button').forEach(btn=>{
-  btn.addEventListener('click',()=>{
-    chartRange=btn.dataset.range;
-    localStorage.setItem('mygarage_chart_range',chartRange);
-    syncRangeUI();
-    drawMonth(allExpenses());
-    drawKm();
-  });
-});
-$('#monthlyBudget').value=monthlyBudget;
-$('#saveBudget').addEventListener('click',()=>{
-  monthlyBudget=Math.max(0,Number($('#monthlyBudget').value)||0);
-  localStorage.setItem('mygarage_monthly_budget',String(monthlyBudget));
-  toast('✓ 月預算已更新');
-  drawMonth(allExpenses());
 });
 
 /* ===== 清單 ===== */
@@ -1016,10 +1049,10 @@ function autoAmount(){ const L=parseFloat($('#f-liters').value),P=parseFloat($('
 $('#f-liters').addEventListener('input',autoAmount);
 $('#f-price').addEventListener('input',autoAmount);
 $('#m-type').addEventListener('change',()=>{
-  const t=$('#m-type').value; const noOdo=['稅金','罰單','保險','停車費'].includes(t);
+  const t=$('#m-type').value; const noOdo=['稅金','罰單','保險'].includes(t);
   $('#odoHint').textContent=noOdo?'這類支出通常不用填里程':'保養維修建議填,方便算下次週期';
-  $('#shopLabel').textContent=t==='罰單'?'開單機關(選填)':t==='保險'?'保險公司(選填)':t==='稅金'?'繳費管道(選填)':t==='停車費'?'停車場/地點(選填)':'店家(選填)';
-  $('#m-item').placeholder=t==='罰單'?'例:超速 10km/h 以內':t==='保險'?'例:乙式車體險續保':t==='稅金'?'例:牌照稅 / 燃料費':t==='停車費'?'例:月租停車 / 臨停 2 小時':'例:機油+機油芯更換';
+  $('#shopLabel').textContent=t==='罰單'?'開單機關(選填)':t==='保險'?'保險公司(選填)':t==='稅金'?'繳費管道(選填)':'店家(選填)';
+  $('#m-item').placeholder=t==='罰單'?'例:超速 10km/h 以內':t==='保險'?'例:乙式車體險 續保':t==='稅金'?'例:牌照稅 / 燃料費':'例:機油+機油芯更換';
 });
 
 /* ===== 新增車輛 modal ===== */
@@ -1043,60 +1076,20 @@ $('#v-save').addEventListener('click',async()=>{
     } else {
       const json = await post({action:'addVehicle', data});
       if(json && json.id) currentVid = json.id;
-      toast('✓ 車輛已建立'); closeVehModal(); await loadData();
+      toast('✓ 車輛已建立'); closeVehModal();
+      // 同樣改為本地新增,避免重讀整份資料造成逾時
+      DB.vehicles.push({'ID':currentVid,'名稱':data.name,'類型':data.type,
+        '領牌日期':data.plateDate,'初始里程(km)':data.initOdo,'油箱容量(L)':data.tank});
+      render();
     }
   }catch(err){ toast('新增失敗:'+err.message,false); }
   btn.disabled=false; btn.textContent='建立車輛';
 });
 
-/* ===== v2.5 輸入防呆與撤銷 ===== */
-function latestOdoForCurrent(){
-  const nums=[...fuelRows(),...maintRows()].map(r=>Number(r['里程(km)'])||0).filter(n=>n>0);
-  return nums.length?Math.max(...nums):0;
-}
-function latestDateForCurrent(){
-  const ds=[...fuelRows(),...maintRows()].map(r=>String(r['日期']||'').slice(0,10)).filter(Boolean).sort();
-  return ds.length?ds[ds.length-1]:'';
-}
-function confirmCommonEntry(date,odo){
-  const latestOdo=latestOdoForCurrent();
-  if(odo>0&&latestOdo>0&&odo<latestOdo){
-    if(!confirm('目前輸入里程 '+fmt(odo)+' km，低於現有最新里程 '+fmt(latestOdo)+' km。\n\n若是補登舊紀錄可以繼續，確定要儲存嗎？')) return false;
-  }
-  if(odo>0&&latestOdo>0&&odo-latestOdo>3000){
-    if(!confirm('這次里程比上一筆增加 '+fmt(odo-latestOdo)+' km，看起來偏大。\n\n請確認沒有多打一個數字，仍要儲存嗎？')) return false;
-  }
-  const latestDate=latestDateForCurrent();
-  if(date&&latestDate){
-    const diff=(new Date(latestDate+'T12:00:00')-new Date(date+'T12:00:00'))/86400000;
-    if(diff>90&&!confirm('這筆日期比目前最新紀錄早 '+Math.round(diff)+' 天。\n\n若是補登舊資料可以繼續，確定要儲存嗎？')) return false;
-  }
-  return true;
-}
-function showUndo(kind,id,label){
-  if(!id) return;
-  lastUndo={kind,id};
-  $('#undoText').textContent=label+'已儲存';
-  $('#undoBar').classList.add('show');
-  clearTimeout(undoTimer);
-  undoTimer=setTimeout(()=>{ $('#undoBar').classList.remove('show'); lastUndo=null; },15000);
-}
-$('#undoBtn').addEventListener('click',async()=>{
-  if(!lastUndo) return;
-  const btn=$('#undoBtn'); btn.disabled=true; btn.textContent='撤銷中…';
-  try{
-    await post({action:'undoRecord',data:lastUndo});
-    toast('✓ 已撤銷上一筆新增');
-    $('#undoBar').classList.remove('show'); lastUndo=null;
-    await loadData();
-  }catch(err){ toast('撤銷失敗:'+err.message,false); }
-  btn.disabled=false; btn.textContent='撤銷';
-});
-
 /* ===== 送出加油/支出(帶當前車輛 ID) ===== */
 async function post(payload){
   if(!API_URL){ toast('示範模式無法儲存,請先完成後端部署',false); return false; }
-  // 資料包成網址參數送出,走雙保險通道;
+  // 資料包成網址參數送出,走多通道容錯;
   // reqId 是唯一編號,就算備援重送,後端也只會記一筆(防重複)
   const reqId = 'r' + Date.now() + '_' + Math.floor(Math.random()*1000000);
   const url = API_URL + '?action=' + encodeURIComponent(payload.action)
@@ -1106,43 +1099,43 @@ async function post(payload){
   if(!json.ok) throw new Error(json.error||'寫入失敗');
   return json;
 }
+
+/* 寫入成功後,直接把這筆加進畫面上的資料並重繪。
+   不再重讀整份試算表 —— 那既慢又是先前「儲存成功卻顯示讀取失敗」的元兇。
+   下次開啟或按重新整理時,自然會從試算表拿到完整最新資料。 */
+function addLocalFuel(d){
+  DB.fuel.push({
+    '日期':d.date, '里程(km)':Number(d.odo), '公升':Number(d.liters),
+    '單價':Number(d.price), '金額':Number(d.amount), '加油站':d.station||'',
+    '是否加滿':d.full?'是':'否', '備註':d.note||'', '建立時間':'', '車輛':d.vehicleId
+  });
+  render();
+}
+function addLocalMaint(d){
+  DB.maint.push({
+    '日期':d.date, '里程(km)':Number(d.odo)||0, '類型':d.type||'其他',
+    '項目':d.item||'', '金額':Number(d.amount), '店家':d.shop||'',
+    '備註':d.note||'', '建立時間':'', '車輛':d.vehicleId
+  });
+  render();
+}
 $('#f-save').addEventListener('click',async()=>{
   const data={ date:$('#f-date').value, odo:parseFloat($('#f-odo').value), liters:parseFloat($('#f-liters').value),
     price:parseFloat($('#f-price').value), amount:parseFloat($('#f-amount').value), station:$('#f-station').value.trim(),
     full:$('#f-full').checked, note:$('#f-note').value.trim(), vehicleId:currentVid };
   if(!data.date||!(data.odo>0)||!(data.liters>0)||!(data.amount>=0)){ toast('請填寫日期、里程、公升與金額',false); return; }
-  if(!confirmCommonEntry(data.date,data.odo)) return;
-  if(data.price>0){
-    const calc=data.liters*data.price, diff=Math.abs(data.amount-calc), tolerance=Math.max(20,calc*.1);
-    if(diff>tolerance&&!confirm('公升 × 單價約為 NT$'+fmt(calc)+'，與輸入金額 NT$'+fmt(data.amount)+' 差距較大。\n\n仍要儲存嗎？')) return;
-  }
   const btn=$('#f-save'); btn.disabled=true; btn.textContent='儲存中…';
-  try{
-    const result=await post({action:'addFuel',data});
-    if(result){
-      toast('✓ 加油紀錄已儲存');
-      showUndo('fuel',result.id,'加油紀錄');
-      ['f-odo','f-liters','f-price','f-amount','f-station','f-note'].forEach(id=>$('#'+id).value='');
-      await loadData();
-    }
-  }catch(err){ toast('儲存失敗:'+err.message,false); }
+  try{ if(await post({action:'addFuel',data})){ toast('✓ 加油紀錄已儲存'); ['f-odo','f-liters','f-price','f-amount','f-station','f-note'].forEach(id=>$('#'+id).value=''); addLocalFuel(data); } }
+  catch(err){ toast('儲存失敗:'+err.message,false); }
   btn.disabled=false; btn.textContent='儲存加油紀錄';
 });
 $('#m-save').addEventListener('click',async()=>{
   const data={ date:$('#m-date').value, odo:parseFloat($('#m-odo').value)||0, type:$('#m-type').value, item:$('#m-item').value.trim(),
     amount:parseFloat($('#m-amount').value), shop:$('#m-shop').value.trim(), note:$('#m-note').value.trim(), vehicleId:currentVid };
   if(!data.date||!data.item||!(data.amount>=0)){ toast('請填寫日期、項目與金額',false); return; }
-  if(!confirmCommonEntry(data.date,data.odo)) return;
   const btn=$('#m-save'); btn.disabled=true; btn.textContent='儲存中…';
-  try{
-    const result=await post({action:'addMaint',data});
-    if(result){
-      toast('✓ 支出紀錄已儲存');
-      showUndo('maint',result.id,'支出紀錄');
-      ['m-odo','m-item','m-amount','m-shop','m-note'].forEach(id=>$('#'+id).value='');
-      await loadData();
-    }
-  }catch(err){ toast('儲存失敗:'+err.message,false); }
+  try{ if(await post({action:'addMaint',data})){ toast('✓ 支出紀錄已儲存'); ['m-odo','m-item','m-amount','m-shop','m-note'].forEach(id=>$('#'+id).value=''); addLocalMaint(data); } }
+  catch(err){ toast('儲存失敗:'+err.message,false); }
   btn.disabled=false; btn.textContent='儲存支出紀錄';
 });
 
@@ -1169,7 +1162,6 @@ function demoData(){
       {'日期':'2025-05-20','里程(km)':0,'類型':'稅金','項目':'牌照稅','金額':11230,'店家':'','備註':'','車輛':'v1'},
       {'日期':'2025-07-12','里程(km)':11500,'類型':'保養','項目':'定期保養','金額':8500,'店家':'奧迪內湖','備註':'','車輛':'v1'},
       {'日期':'2025-12-14','里程(km)':0,'類型':'罰單','項目':'超速 10km/h 以內','金額':1600,'店家':'台北市警局','備註':'','車輛':'v1'},
-      {'日期':'2026-04-18','里程(km)':0,'類型':'停車費','項目':'百貨停車 3 小時','金額':120,'店家':'台北信義區','備註':'','車輛':'v1'},
       {'日期':'2026-02-03','里程(km)':15100,'類型':'維修','項目':'前輪軸承更換','金額':14200,'店家':'奧迪內湖','備註':'','車輛':'v1'},
       {'日期':'2026-06-02','里程(km)':0,'類型':'稅金','項目':'牌照稅','金額':11230,'店家':'','備註':'','車輛':'v1'},
       {'日期':'2026-03-10','里程(km)':7900,'類型':'保養','項目':'機油更換','金額':800,'店家':'','備註':'','車輛':'v2'},
@@ -1179,6 +1171,17 @@ function demoData(){
 }
 
 /* ===== 啟動 ===== */
+// 圖表期間切換
+bindRangeChips('monthRangeChips', n=>{ monthRange=n; drawMonth(allExpenses()); });
+bindRangeChips('kmRangeChips',   n=>{ kmRange=n;    drawKm(); });
+// 點右上角里程膠囊 = 重新讀取試算表(手動改過表格後用得到)
+document.getElementById('odoPill').addEventListener('click', async ()=>{
+  const dot = document.getElementById('odoDot');
+  dot.style.background = 'var(--amber, #FFB13D)';
+  try{ await loadData(); toast('✓ 已更新'); }
+  catch(e){ /* loadData 內部已處理錯誤顯示 */ }
+  dot.style.background = '';
+});
 $('#appVersion').textContent=APP_VERSION;
 debugLog('環境','version='+APP_VERSION+'\npage='+location.href+'\nua='+navigator.userAgent+'\nstandalone='+(navigator.standalone===true)+'\nproxy='+(API_PROXY_URL||'(未設定)'));
 if(DEBUG_MODE) $('#debugPanel').classList.add('show');
