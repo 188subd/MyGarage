@@ -4,7 +4,7 @@
 iPhone 連線經由 Cloudflare Worker 代理。
 
 - 線上網址:https://188subd.github.io/MyGarage/
-- 目前版本:v3.1.0(2026-08-20)
+- 目前版本:v3.2.0(2026-10-23)
 - 資料庫:Google Sheets「愛車紀錄」(分頁:車輛 / 加油紀錄 / 保養維修)
 - 各服務網址存放於 index.html 與 Worker 設定中,此文件不重複記載
 
@@ -16,6 +16,18 @@ iPhone 連線經由 Cloudflare Worker 代理。
 **自 v3.0.0 起統一往上遞增,v2.4–v2.6 視為過渡期編號。**
 
 ---
+
+## v3.2.0 — 2026-10-23 「通行碼」
+
+**新增**
+- 通行碼:第一次開啟(或通行碼不正確)時輸入一次,只存在這支手機;版本標籤旁有「更換通行碼」
+- 後端(Apps Script v2.6.0)與 Cloudflare Worker 改為需要驗證才提供資料;驗證在讀寫試算表之前進行
+
+**變更**
+- 連線改為只走 Cloudflare Worker;移除直連 Apps Script 與 iframe / JSONP 備援通道
+- 前端不再內含後端網址
+- 來自試算表的文字顯示前一律跳脫;加入內容安全政策(CSP,只允許連到 Worker)與 Chart.js 的完整性檢查(SRI)
+- 部署與回復步驟見 `DEPLOY_STEPS.md`
 
 ## v3.1.0 — 2026-08-20 「支出六大分類 + 停車費」
 

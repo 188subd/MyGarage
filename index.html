@@ -2,10 +2,15 @@
 <!--
   ═══════════════════════════════════════════════════════════════
    愛車紀錄 MyGarage — 前端(單一檔案,無需建置)
-   版本:v3.1.0        更新日期:2026-08-20
+   版本:v3.2.0        更新日期:2026-10-23
   ═══════════════════════════════════════════════════════════════
 
    【這一版改了什麼】
+   - 新增「通行碼」:第一次開啟(或通行碼不正確)時輸入一次,存在這支手機,之後自動帶上;
+     可從版本標籤旁的「更換通行碼」重設。沒有通行碼就讀不到資料。
+   - 連線改為只走 Cloudflare Worker;移除直連 Apps Script 與 iframe / JSONP 備援通道
+   - 來自試算表的文字顯示前一律跳脫;加入內容安全政策(CSP)與 Chart.js 的完整性檢查(SRI)
+   - 以下為 v3.1.0 的內容:
    - 新增「停車費」類型(先前記的停車費會被歸到「其他」,現已正確分類)
    - 圖表改用六大項:加油 / 保養維修耗材 / 燃料牌照稅 / 保費 / 停車費 / 罰單 / 其他
    - 紀錄頁篩選籤改為六大項,並顯示該分類的筆數與金額小計
@@ -18,10 +23,9 @@
    - 版本號自本版起統一,取代混亂的 v2.4~v2.6 過渡編號
 
    【要改設定看這裡】
-   - API_URL / API_PROXY_URL ── 搜尋「設定區」,在 script 開頭
+   - API_PROXY_URL ── 搜尋「設定區」,在 script 開頭(Cloudflare Worker 網址;通行碼不寫在這裡,由使用者在手機輸入)
    - MONTHLY_BUDGET(每月預算)── 搜尋「MONTHLY_BUDGET」
-   ⚠️ 連線層(apiGet / fetchGet / frameGet / jsonpGet)是 iPhone 相容
-      的關鍵,非必要請勿改動。
+   ⚠️ 連線層(apiGet / fetchGet / 通行碼視窗)是 iPhone 相容與存取保護的關鍵,非必要請勿改動。
 
    【架構】
    本檔(GitHub Pages) → Cloudflare Worker 代理 → Google Apps Script
@@ -40,11 +44,12 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="theme-color" content="#07090F">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' https://cdnjs.cloudflare.com; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src https://mygarage-api.188rex.workers.dev; manifest-src 'self'; worker-src 'none'; base-uri 'none'; form-action 'none'; object-src 'none'; frame-src 'none'">
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js" integrity="sha384-bs/nf9FbdNouRbMiFcrcZfLXYPKiPaGVGplVbv7dLGECccEXDW+S3zjqSKR5ZEaD" crossorigin="anonymous"></script>
 
 <style>
 :root{
@@ -290,6 +295,7 @@ nav button.on .nico{background:var(--grad);-webkit-background-clip:text;backgrou
     <div style="min-width:0">
       <small style="display:block;color:var(--muted);font-size:12px;letter-spacing:.14em">MY GARAGE</small>
       <div class="version-badge" id="appVersion"></div>
+      <a href="#" id="changePass" style="font-size:11px;color:var(--muted);text-decoration:underline">更換通行碼</a>
       <button class="car-switch" id="carSwitch">
         <h1 id="carName">愛車紀錄</h1>
         <span class="caret">▼</span>
@@ -303,7 +309,7 @@ nav button.on .nico{background:var(--grad);-webkit-background-clip:text;backgrou
 
   <div id="demoBanner" class="banner" style="display:none">
     <b>示範模式</b> — 尚未連接後端,顯示的是範例資料。請在 index.html 開頭的
-    <b>API_URL</b> 貼上你的 Apps Script 網址後重新上傳。
+    <b>API_PROXY_URL</b> 填入你的 Cloudflare Worker 網址後重新上傳。
   </div>
 
   <div id="debugPanel" class="debug-panel"><div class="debug-head"><b>連線診斷</b><button id="debugCopy" type="button">複製</button></div><div id="debugText"></div></div>
@@ -496,6 +502,16 @@ nav button.on .nico{background:var(--grad);-webkit-background-clip:text;backgrou
 </div></nav>
 
 <!-- 新增車輛 -->
+<div class="modal" id="passModal">
+  <div class="sheet">
+    <div class="form-title">🔒 輸入通行碼</div>
+    <div class="field"><label>通行碼(只會存在這支手機)</label><input type="password" id="pass-input" autocomplete="current-password" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="請輸入通行碼"></div>
+    <div id="pass-msg" class="note" style="min-height:1.2em"></div>
+    <button class="btn" id="pass-ok">確定</button>
+    <button class="btn ghost" id="pass-cancel" style="margin-top:10px">取消</button>
+  </div>
+</div>
+
 <div class="modal" id="vehModal">
   <div class="sheet">
     <div class="form-title">🚗 新增車輛</div>
@@ -519,11 +535,13 @@ nav button.on .nico{background:var(--grad);-webkit-background-clip:text;backgrou
 <script>
 /* ============================================================
    ★★★ 只需要改這一行 ★★★
-   把 Apps Script 部署後的網址貼在引號中間。留空 = 示範模式。
+   把 Cloudflare Worker 的網址貼在引號中間。留空 = 示範模式。
+   (通行碼不寫在這裡:第一次開啟時在手機輸入,只存在手機本機。)
 ============================================================ */
-const APP_VERSION = 'v3.1.0';
-const API_URL = "https://script.google.com/macros/s/AKfycbw4TN9_LXJt2sq_kcTwmEg0OPFyF8jquhanquUt-_uOQ6Ea0BxJenjVCgLYIhJAOCSKkA/exec";  // Apps Script /exec 網址
-const API_PROXY_URL = "https://mygarage-api.188rex.workers.dev/"; // 建議填 Cloudflare Worker 網址；留空時直接連 Apps Script
+const APP_VERSION = 'v3.2.0';
+const API_PROXY_URL = "https://mygarage-api.188rex.workers.dev/"; // Cloudflare Worker 網址(必填;留空 = 示範模式)
+const API_BASE = API_PROXY_URL.replace(/\/$/, '');
+const PASS_KEY = 'mg_passcode';                                    // 通行碼存在手機 localStorage
 const DEBUG_MODE = new URLSearchParams(location.search).get('debug') === '1';
 
 /* ===== 類別設定 ===== */
@@ -573,6 +591,8 @@ let newVehType = '汽車';
 const $ = s => document.querySelector(s);
 const fmt  = n => Number(n).toLocaleString('zh-TW', {maximumFractionDigits:0});
 const fmt1 = n => Number(n).toLocaleString('zh-TW', {minimumFractionDigits:1, maximumFractionDigits:1});
+/* 所有「來自試算表的文字」放進 innerHTML 之前一律先跳脫(避免被植入的內容在輸入通行碼後執行) */
+const esc = s => String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const todayStr = () => { const d=new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); };
 function toast(msg, ok=true){ const t=$('#toast'); t.textContent=msg; t.className='show '+(ok?'ok':'err'); setTimeout(()=>{t.className='';},3000); }
 const debugLines=[];
@@ -587,11 +607,26 @@ function errText(e){
   if(!e) return 'Unknown error';
   return [e.name,e.message,e.stack].filter(Boolean).join(' | ');
 }
-function buildApiUrl(actionUrl){
-  if(!API_PROXY_URL) return actionUrl;
-  const u=new URL(actionUrl);
-  const q=u.searchParams.toString();
-  return API_PROXY_URL.replace(/\/$/,'') + '?' + q;
+/* ===== 通行碼 ===== */
+function getPass(){ try{ return localStorage.getItem(PASS_KEY)||''; }catch(e){ return ''; } }
+function setPass(v){ try{ localStorage.setItem(PASS_KEY, v); }catch(e){} }
+function clearPass(){ try{ localStorage.removeItem(PASS_KEY); }catch(e){} }
+let passPending = null;   // 同時只開一個通行碼視窗
+function askPass(msg){
+  if(passPending) return passPending;
+  passPending = new Promise((resolve, reject)=>{
+    const modal=$('#passModal'), input=$('#pass-input'), ok=$('#pass-ok'), cancel=$('#pass-cancel');
+    $('#pass-msg').textContent = msg || '';
+    input.value='';
+    modal.classList.add('show');
+    setTimeout(()=>input.focus(),50);
+    function done(){ modal.classList.remove('show'); ok.removeEventListener('click',onOk); cancel.removeEventListener('click',onCancel); input.removeEventListener('keydown',onKey); passPending=null; }
+    function onOk(){ const v=input.value.trim(); if(!v){ $('#pass-msg').textContent='請輸入通行碼'; return; } setPass(v); done(); resolve(v); }
+    function onCancel(){ done(); const e=new Error('已取消輸入通行碼'); e.cancelled=true; reject(e); }
+    function onKey(ev){ if(ev.key==='Enter'){ ev.preventDefault(); onOk(); } }
+    ok.addEventListener('click',onOk); cancel.addEventListener('click',onCancel); input.addEventListener('keydown',onKey);
+  });
+  return passPending;
 }
 
 const vehIcon = v => (v && v['類型']==='機車') ? '🏍' : '🚗';
@@ -632,10 +667,10 @@ function renderGarage(){
   DB.vehicles.forEach(v=>{
     const on = String(v['ID'])===String(currentVid);
     const nFuel = DB.fuel.filter(r=>String(r['車輛']||(DB.vehicles[0]&&DB.vehicles[0]['ID']))===String(v['ID'])).length;
-    html += '<div class="gitem '+(on?'on':'')+'" data-vid="'+v['ID']+'">'+
+    html += '<div class="gitem '+(on?'on':'')+'" data-vid="'+esc(v['ID'])+'">'+
       '<div class="gic">'+vehIcon(v)+'</div>'+
-      '<div class="gmid"><div class="gname">'+(v['名稱']||'未命名')+'</div>'+
-      '<div class="gsub">'+(v['類型']||'汽車')+' · '+nFuel+' 筆加油</div></div>'+
+      '<div class="gmid"><div class="gname">'+esc(v['名稱']||'未命名')+'</div>'+
+      '<div class="gsub">'+esc(v['類型']||'汽車')+' · '+nFuel+' 筆加油</div></div>'+
       (on?'<div class="gchk">✓</div>':'')+'</div>';
   });
   html += '<div class="gadd" id="addVehBtn">＋ 新增車輛</div>';
@@ -655,53 +690,47 @@ function renderGarage(){
 /* ===== 讀取資料 ===== */
 async function loadData(){
   $('#loading').style.display = 'block';
-  if (!API_URL){
+  if (!API_PROXY_URL){
     $('#demoBanner').style.display = 'block';
     DB = demoData();
     afterLoad();
     return;
   }
   try{
-    const json = await apiGet(API_URL + '?action=all');
+    const json = await apiGet(API_BASE + '?action=all');
     if (!json.ok) throw new Error(json.error || '後端回傳錯誤');
     DB = { vehicles: json.vehicles||[], fuel: json.fuel||[], maint: json.maint||[] };
     afterLoad();
   }catch(err){
     $('#loading').style.display = 'none';
+    if (err && err.auth){ toast('通行碼不正確,請重新輸入', false); loadData(); return; }   // 需要使用者輸入才會繼續,不會自動重試迴圈
+    if (err && err.cancelled){ toast('尚未輸入通行碼,資料未讀取', false); return; }
     debugLog('最終讀取失敗',errText(err));
     $('#debugPanel').classList.add('show');
     toast('讀取失敗，請查看連線診斷', false);
   }
 }
 
-/* iOS 優先策略：proxy/fetch → direct fetch → iframe → JSONP。\n   正式使用建議設定 API_PROXY_URL，避免 Safari ITP 與 Apps Script 302/CORS。 */
+/* 連線層:只走 Cloudflare Worker(fetch)。每個請求帶 Authorization: Bearer <通行碼>。
+   沒有通行碼 → 先詢問;伺服器回 401 → 清除已存的通行碼並丟出 auth 錯誤(由呼叫端決定是否再詢問)。 */
 async function apiGet(url){
-  const attempts=[];
-  const candidates=[];
-  const proxied=buildApiUrl(url);
-  if(API_PROXY_URL) candidates.push(['proxy-fetch',()=>fetchGet(proxied)]);
-  candidates.push(['direct-fetch',()=>fetchGet(url)]);
-  if(!API_PROXY_URL){
-    candidates.push(['iframe',()=>frameGet(url)]);
-    candidates.push(['jsonp',()=>jsonpGet(url)]);
+  let pass = getPass();
+  if(!pass) pass = await askPass('第一次使用或尚未輸入通行碼');
+  const started=performance.now();
+  try{
+    debugLog('proxy-fetch 開始', url);
+    const data = await fetchGet(url, pass);
+    debugLog('proxy-fetch 成功', Math.round(performance.now()-started)+' ms');
+    return data;
+  }catch(e){
+    debugLog('proxy-fetch 失敗', errText(e));
+    // 只在「儲存的通行碼仍是這次請求用的那一個」時才清除；避免較舊請求的 401 洗掉使用者剛輸入的新通行碼
+    if(e && e.auth && getPass()===pass) clearPass();
+    throw e;
   }
-  for(const [name,fn] of candidates){
-    const started=performance.now();
-    try{
-      debugLog(name+' 開始', name==='proxy-fetch'?proxied:url);
-      const data=await fn();
-      debugLog(name+' 成功', Math.round(performance.now()-started)+' ms');
-      return data;
-    }catch(e){
-      const msg=errText(e);
-      attempts.push(name+': '+msg);
-      debugLog(name+' 失敗',msg);
-    }
-  }
-  throw new Error(attempts.join(' || '));
 }
 
-async function fetchGet(url){
+async function fetchGet(url, pass){
   const controller = new AbortController();
   // Apps Script 讀取通常 4~8 秒,手機網路或冷啟動時更久,
   // 逾時設 45 秒,避免正常但較慢的回應被誤判為失敗
@@ -712,48 +741,20 @@ async function fetchGet(url){
     const res = await fetch(bust, {
       method:'GET', mode:'cors', credentials:'omit', cache:'no-store',
       redirect:'follow', referrerPolicy:'no-referrer', signal:controller.signal,
-      headers:{'Accept':'application/json,text/plain,*/*'}
+      headers:{'Accept':'application/json,text/plain,*/*','Authorization':'Bearer '+pass}
     });
-    debugLog('fetch 回應','status='+res.status+' type='+res.type+' redirected='+res.redirected+' url='+res.url);
-    if (!res.ok) throw new Error('HTTP ' + res.status + ' ' + res.statusText);
+    debugLog('fetch 回應','status='+res.status+' type='+res.type);
+    if (res.status === 401){ const e=new Error('通行碼不正確'); e.auth=true; throw e; }
     const text=await res.text();
-    try{return JSON.parse(text);}catch(_){throw new Error('非 JSON 回應: '+text.slice(0,180));}
+    let json=null;
+    try{ json=JSON.parse(text); }catch(_){ /* 非 JSON */ }
+    if (res.status === 502 && json && json.error==='upstream_auth') throw new Error('後端驗證失敗(內部金鑰設定不一致),通行碼沒有問題;請檢查部署設定');
+    if (!res.ok) throw new Error('HTTP ' + res.status + ' ' + res.statusText);
+    if (json===null) throw new Error('非 JSON 回應: '+text.slice(0,180));
+    return json;
   } finally { clearTimeout(timer); }
 }
 
-function frameGet(url){
-  return new Promise((resolve, reject)=>{
-    const token = 'f' + Date.now() + '_' + Math.floor(Math.random()*100000);
-    const iframe = document.createElement('iframe');
-    iframe.style.display = 'none';
-    const timer = setTimeout(()=>{ cleanup(); reject(new Error('iframe timeout')); }, 12000);
-    function onMsg(ev){
-      if (!ev.data || ev.data.__token !== token) return;
-      cleanup();
-      if (ev.data.ok === false && ev.data.error) reject(new Error(ev.data.error));
-      else resolve(ev.data.payload);
-    }
-    function cleanup(){ clearTimeout(timer); window.removeEventListener('message', onMsg); if(iframe.parentNode) iframe.parentNode.removeChild(iframe); }
-    window.addEventListener('message', onMsg);
-    iframe.onerror = ()=>{ cleanup(); reject(new Error('iframe load error')); };
-    iframe.src = url + (url.includes('?')?'&':'?') + 'mode=frame&token=' + encodeURIComponent(token) + '&_ts=' + Date.now();
-    document.body.appendChild(iframe);
-  });
-}
-
-function jsonpGet(url){
-  return new Promise((resolve, reject)=>{
-    const cb = 'jsonp_' + Date.now() + '_' + Math.floor(Math.random()*100000);
-    const s = document.createElement('script');
-    const timer = setTimeout(()=>{ cleanup(); reject(new Error('JSONP timeout / Safari ITP blocked')); }, 15000);
-    function cleanup(){ clearTimeout(timer); try{ delete window[cb]; }catch(e){ window[cb]=undefined; } if(s.parentNode) s.parentNode.removeChild(s); }
-    window[cb] = data=>{ cleanup(); resolve(data); };
-    s.type='text/javascript'; s.async=true;
-    s.src=url+(url.includes('?')?'&':'?')+'callback='+encodeURIComponent(cb)+'&_ts='+Date.now();
-    s.onerror=()=>{ cleanup(); reject(new Error('JSONP script blocked')); };
-    (document.head||document.documentElement).appendChild(s);
-  });
-}
 function afterLoad(){
   if (!DB.vehicles.length) DB.vehicles = [{'ID':'v1','名稱':'我的車','類型':'汽車','領牌日期':'','初始里程(km)':0,'油箱容量(L)':60}];
   // 若目前選的車不存在,回到第一台
@@ -1092,14 +1093,14 @@ function renderList(filter){
     if(it.kind==='fuel'){
       const k=(r['是否加滿']==='是'&&kmByKey[String(r['日期'])])?'<div class="kmpl">▲ '+fmt1(kmByKey[String(r['日期'])])+' km/L</div>':'';
       return '<div class="rec"><div class="ico" style="color:'+catColor('油錢')+'">⛽</div>'+
-        '<div class="mid"><div class="l1">'+(r['加油站']||'加油')+(r['是否加滿']==='是'?'':'(未加滿)')+'</div>'+
-        '<div class="l2">'+r['日期']+' · '+fmt(r['里程(km)'])+' km · '+r['公升']+' L @ '+r['單價']+'</div></div>'+
+        '<div class="mid"><div class="l1">'+esc(r['加油站']||'加油')+(r['是否加滿']==='是'?'':'(未加滿)')+'</div>'+
+        '<div class="l2">'+esc(r['日期'])+' · '+fmt(r['里程(km)'])+' km · '+esc(r['公升'])+' L @ '+esc(r['單價'])+'</div></div>'+
         '<div class="end"><div class="amt">$'+fmt(r['金額'])+'</div>'+k+'</div></div>';
     }
     const t=normType(r['類型']); const odo=Number(r['里程(km)'])>0?' · '+fmt(r['里程(km)'])+' km':'';
     return '<div class="rec"><div class="ico" style="color:'+catColor(t)+'">'+catIcon(t)+'</div>'+
-      '<div class="mid"><div class="l1">'+(r['項目']||t)+'</div>'+
-      '<div class="l2">'+r['日期']+odo+' · '+(r['店家']||t)+'</div></div>'+
+      '<div class="mid"><div class="l1">'+esc(r['項目']||t)+'</div>'+
+      '<div class="l2">'+esc(r['日期'])+odo+' · '+esc(r['店家']||t)+'</div></div>'+
       '<div class="end"><div class="amt">$'+fmt(r['金額'])+'</div></div></div>';
   }).join('');
 }
@@ -1129,7 +1130,7 @@ $('#v-save').addEventListener('click',async()=>{
   if(!data.name){ toast('請幫車輛取個名字',false); return; }
   const btn=$('#v-save'); btn.disabled=true; btn.textContent='建立中…';
   try{
-    if(!API_URL){
+    if(!API_PROXY_URL){
       const vid='v'+Date.now();
       DB.vehicles.push({'ID':vid,'名稱':data.name,'類型':data.type,'領牌日期':data.plateDate,'初始里程(km)':data.initOdo,'油箱容量(L)':data.tank});
       currentVid=vid; toast('✓ 已新增(示範模式,重整後消失)'); closeVehModal(); render();
@@ -1148,14 +1149,16 @@ $('#v-save').addEventListener('click',async()=>{
 
 /* ===== 送出加油/支出(帶當前車輛 ID) ===== */
 async function post(payload){
-  if(!API_URL){ toast('示範模式無法儲存,請先完成後端部署',false); return false; }
+  if(!API_PROXY_URL){ toast('示範模式無法儲存,請先完成後端部署',false); return false; }
   // 資料包成網址參數送出,走多通道容錯;
   // reqId 是唯一編號,就算備援重送,後端也只會記一筆(防重複)
   const reqId = 'r' + Date.now() + '_' + Math.floor(Math.random()*1000000);
-  const url = API_URL + '?action=' + encodeURIComponent(payload.action)
+  const url = API_BASE + '?action=' + encodeURIComponent(payload.action)
             + '&payload=' + encodeURIComponent(JSON.stringify(payload.data))
             + '&reqId=' + reqId;
-  const json = await apiGet(url);
+  let json;
+  try{ json = await apiGet(url); }
+  catch(e){ if(e && e.auth) toast('通行碼不正確,請再按一次儲存並輸入通行碼', false); throw e; }
   if(!json.ok) throw new Error(json.error||'寫入失敗');
   return json;
 }
@@ -1243,6 +1246,11 @@ document.getElementById('odoPill').addEventListener('click', async ()=>{
   dot.style.background = '';
 });
 $('#appVersion').textContent=APP_VERSION;
+$('#changePass').addEventListener('click', async (ev)=>{
+  ev.preventDefault();
+  try{ await askPass('輸入新的通行碼'); toast('✓ 通行碼已更新'); loadData(); }
+  catch(e){ /* 取消 */ }
+});
 debugLog('環境','version='+APP_VERSION+'\npage='+location.href+'\nua='+navigator.userAgent+'\nstandalone='+(navigator.standalone===true)+'\nproxy='+(API_PROXY_URL||'(未設定)'));
 if(DEBUG_MODE) $('#debugPanel').classList.add('show');
 $('#debugCopy').addEventListener('click',async()=>{
