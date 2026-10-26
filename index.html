@@ -429,6 +429,9 @@ nav button.on .nico{background:var(--grad);-webkit-background-clip:text;backgrou
           <div class="hint" id="odoHint">保養維修建議填,方便算下次週期</div>
         </div>
       </div>
+      <div class="field"><label>攤提月數(1 = 不攤提)</label><input type="number" id="m-amort" min="1" max="24" step="1" inputmode="numeric" value="1">
+        <div class="hint" id="amortHint">從「付款當月」開始平均分攤到各月份的統計;例:季繳停車費填 3</div>
+      </div>
       <div class="field"><label id="itemLabel">項目</label><input type="text" id="m-item" placeholder="例:機油+機油芯更換"></div>
       <div class="field"><label id="shopLabel">店家(選填)</label><input type="text" id="m-shop" placeholder="例:奧迪內湖服務廠"></div>
       <div class="field"><label>備註(選填)</label><input type="text" id="m-note"></div>
@@ -544,7 +547,7 @@ nav button.on .nico{background:var(--grad);-webkit-background-clip:text;backgrou
    把 Cloudflare Worker 的網址貼在引號中間。留空 = 示範模式。
    (通行碼不寫在這裡:第一次開啟時在手機輸入,只存在手機本機。)
 ============================================================ */
-const APP_VERSION = 'v3.3.0';
+const APP_VERSION = 'v3.4.0';
 const API_PROXY_URL = "https://mygarage-api.188rex.workers.dev/"; // Cloudflare Worker 網址(必填;留空 = 示範模式)
 const API_BASE = API_PROXY_URL.replace(/\/$/, '');
 const PASS_KEY = 'mg_passcode';                                    // 通行碼存在手機 localStorage
@@ -807,12 +810,30 @@ function calcSegments(rows){
 }
 
 /* ===== 支出彙整(當前車輛) ===== */
+/* 攤提:從「付款當月」起平均分攤到 n 個月。第一份保留原日期,之後各月記在該月 1 日;
+   最後一個月吸收四捨五入的零頭,所以加總一定等於實際付款金額。 */
+function amortMonthsOf(r){ const n=Math.floor(Number(r&&r['攤提月數'])); return n>=1?Math.min(n,24):1; }
+function amortParts(date, amount, n){
+  const m=/^(\d{4})[-\/](\d{1,2})(?:[-\/](\d{1,2}))?/.exec(String(date));
+  n=Math.min(Math.floor(Number(n)),24);
+  const mon=m?Number(m[2]):0;
+  if(!m||mon<1||mon>12||!(n>1)||!isFinite(amount)||!(amount>0)) return [{date:String(date),amount}];
+  // 整數金額以「元」平均、有小數則以「分」平均:每份取底,餘數每份多 1 單位,從第一份開始補。每份都不會是負數,加總恆等於實付
+  const unit=Number.isInteger(amount)?1:100, cents=Math.round(amount*unit), q=Math.floor(cents/n), rem=cents-q*n;
+  const base=Number(m[1])*12+mon-1, out=[];
+  for(let i=0;i<n;i++){
+    const t=base+i, ym=Math.floor(t/12)+'-'+String(t%12+1).padStart(2,'0');
+    const first=m[1]+'-'+String(mon).padStart(2,'0')+'-'+String(m[3]||1).padStart(2,'0');
+    out.push({date:i===0?first:ym+'-01',amount:(q+(i<rem?1:0))/unit});
+  }
+  return out;
+}
 function allExpenses(){
   const list=[];
   fuelRows().forEach(r=>list.push({date:String(r['日期']),cat:'油錢',grp:'加油',amount:Number(r['金額'])||0}));
   maintRows().forEach(r=>{
     const c = normType(r['類型']);
-    list.push({date:String(r['日期']),cat:c,grp:groupOf(c),amount:Number(r['金額'])||0});
+    amortParts(r['日期'],Number(r['金額'])||0,amortMonthsOf(r)).forEach(p=>list.push({date:p.date,cat:c,grp:groupOf(c),amount:p.amount}));
   });
   return list;
 }
@@ -1114,7 +1135,7 @@ function renderList(filter){
     const odo=Number(r['里程(km)'])>0?' · '+fmt(r['里程(km)'])+' km':'';
     return '<div class="rec"><div class="ico" style="color:'+catColor(t)+'">'+catIcon(t)+'</div>'+
       '<div class="mid"><div class="l1">'+esc(title)+'</div>'+
-      '<div class="l2">'+esc(r['日期'])+odo+' · '+esc(sub)+'</div></div>'+
+      '<div class="l2">'+esc(r['日期'])+odo+' · '+esc(sub)+(amortMonthsOf(r)>1?' · 分'+amortMonthsOf(r)+'個月':'')+'</div></div>'+
       '<div class="end"><div class="amt">$'+fmt(r['金額'])+'</div>'+delBtn('maint',r)+'</div></div>';
   }).join('');
 }
@@ -1123,6 +1144,13 @@ function renderList(filter){
 function autoAmount(){ const L=parseFloat($('#f-liters').value),P=parseFloat($('#f-price').value); if(L>0&&P>0)$('#f-amount').value=Math.round(L*P); }
 $('#f-liters').addEventListener('input',autoAmount);
 $('#f-price').addEventListener('input',autoAmount);
+function updateAmortHint(){
+  const h=$('#amortHint'), n=Math.floor(Number($('#m-amort').value)), a=parseFloat($('#m-amort').value&&$('#m-amount').value), d=dateVal('m-date');
+  if(!(n>1)||!(a>0)){ h.textContent='從「付款當月」開始平均分攤到各月份的統計;例:季繳停車費填 3'; return; }
+  const p=amortParts(d,a,n), mm=x=>Number(String(x.date).slice(5,7))+'月';
+  h.textContent='從付款當月('+mm(p[0])+')起,'+p.map(mm).join('、')+'各約 NT$'+fmt(p[0].amount)+'(試算表仍記一筆 NT$'+fmt(a)+')';
+}
+['m-amort','m-amount','m-date'].forEach(id=>{ $('#'+id).addEventListener('input',updateAmortHint); $('#'+id).addEventListener('change',updateAmortHint); });
 $('#m-type').addEventListener('change',()=>{
   const t=$('#m-type').value; const noOdo=['稅金','罰單','保險','停車費'].includes(t);
   $('#odoHint').textContent=noOdo?'這類支出通常不用填里程':'保養維修建議填,方便算下次週期';
@@ -1194,7 +1222,7 @@ function addLocalMaint(d,id){
   DB.maint.push({
     '日期':d.date, '里程(km)':Number(d.odo)||0, '類型':d.type||'其他',
     '項目':d.item||'', '金額':Number(d.amount), '店家':d.shop||'',
-    '備註':d.note||'', '建立時間':'', '車輛':d.vehicleId, 'ID':id||''
+    '備註':d.note||'', '建立時間':'', '車輛':d.vehicleId, 'ID':id||'', '攤提月數':d.amortMonths||1
   });
   render();
 }
@@ -1237,10 +1265,15 @@ $('#f-save').addEventListener('click',async()=>{
 });
 $('#m-save').addEventListener('click',async()=>{
   const data={ date:dateVal('m-date'), odo:parseFloat($('#m-odo').value)||0, type:$('#m-type').value, item:$('#m-item').value.trim(),
-    amount:parseFloat($('#m-amount').value), shop:$('#m-shop').value.trim(), note:$('#m-note').value.trim(), vehicleId:currentVid };
+    amount:parseFloat($('#m-amount').value), amortMonths:$('#m-amort').value===''?1:Number($('#m-amort').value), shop:$('#m-shop').value.trim(), note:$('#m-note').value.trim(), vehicleId:currentVid };
   if(!data.date||(!data.item&&data.type!=='停車費')||!(data.amount>=0)){ toast('請填寫項目與金額',false); return; }
+  if(!Number.isInteger(data.amortMonths)||data.amortMonths<1||data.amortMonths>24){ toast('攤提月數請填 1~24 的整數',false); return; }
   const btn=$('#m-save'); btn.disabled=true; btn.textContent='儲存中…';
-  try{ const res=await post({action:'addMaint',data}); if(res){ showUndo('maint',res.id,'✓ '+data.type+'已儲存 NT$'+fmt(data.amount)); ['m-odo','m-item','m-amount','m-shop','m-note'].forEach(id=>$('#'+id).value=''); dateTouched['m-date']=false; refreshDates(); addLocalMaint(data,res.id); } }
+  try{ const res=await post({action:'addMaint',data}); if(res){
+    // 舊版後端(< v2.7.0)會忽略攤提月數、回應裡也沒有 amort:要讓畫面與試算表一致,並明確警告
+    const stored=Number(res.amort)||1;
+    if(data.amortMonths>1&&stored!==data.amortMonths){ data.amortMonths=stored; toast('已儲存,但後端尚未更新到 v2.7.0,攤提沒有生效',false); }
+    showUndo('maint',res.id,'✓ '+data.type+'已儲存 NT$'+fmt(data.amount)); ['m-odo','m-item','m-amount','m-shop','m-note'].forEach(id=>$('#'+id).value=''); $('#m-amort').value='1'; updateAmortHint(); dateTouched['m-date']=false; refreshDates(); addLocalMaint(data,res.id); } }
   catch(err){ toast('儲存失敗:'+err.message,false); }
   btn.disabled=false; btn.textContent='儲存支出紀錄';
 });
