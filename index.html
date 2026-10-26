@@ -322,7 +322,7 @@ nav button.on .nico{background:var(--grad);-webkit-background-clip:text;backgrou
   <div id="loading" class="loading"><div class="spinner"></div>正在讀取愛車資料…</div>
 
   <!-- ============ 總覽 ============ -->
-  <section id="view-dash" class="view">
+  <section id="view-dash" class="view on">
     <div class="age-card" id="ageCard" style="display:none">
       <div class="age-ring">
         <svg viewBox="0 0 56 56">
@@ -547,7 +547,7 @@ nav button.on .nico{background:var(--grad);-webkit-background-clip:text;backgrou
    把 Cloudflare Worker 的網址貼在引號中間。留空 = 示範模式。
    (通行碼不寫在這裡:第一次開啟時在手機輸入,只存在手機本機。)
 ============================================================ */
-const APP_VERSION = 'v3.4.0';
+const APP_VERSION = 'v3.4.1';
 const API_PROXY_URL = "https://mygarage-api.188rex.workers.dev/"; // Cloudflare Worker 網址(必填;留空 = 示範模式)
 const API_BASE = API_PROXY_URL.replace(/\/$/, '');
 const PASS_KEY = 'mg_passcode';                                    // 通行碼存在手機 localStorage
