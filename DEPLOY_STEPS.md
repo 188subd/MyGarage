@@ -13,7 +13,7 @@
    - 前端：GitHub 上目前的 `index.html`（v3.1.0），任何時候可用 `git revert` 回復
 3. **產生兩把秘密**（用密碼管理器，各至少 **16 個隨機字元**，建議 32 以上；**不要貼給任何人包括我**）：
    - `PASSCODE`：通行碼。你會在手機輸入一次，所以請選你能輸入的（例如 4 個隨機單字連在一起，至少 16 字元）。
-   - `APPS_SCRIPT_KEY`：內部金鑰。只存在 Cloudflare 與 Apps Script，不用輸入，越長越好。
+   - 內部金鑰：只存在 Cloudflare 與 Apps Script，不用輸入，越長越好。**兩邊的名稱不同、值要相同**：Cloudflare 叫 `APPS_SCRIPT_KEY`，Apps Script 叫 `API_KEY`。
 
 ## 1. Apps Script（相容模式，不會讓現有 App 壞掉）
 1. 開啟 Apps Script 專案 → 把 `build\20261023\deploy\程式碼.gs` 的**全部內容**貼上，取代舊的 → 儲存。
@@ -22,7 +22,7 @@
 3. 驗證：瀏覽器開 `你的/exec網址?action=ping` → 應顯示 `"version":"2.6.0"` 和 `"locked":false`。
 
 ## 2. Cloudflare Worker
-1. Worker → 設定 → 變數和密碼 → 新增兩個**密碼（Secret）**：`PASSCODE`、`APPS_SCRIPT_KEY`（值是步驟 0 的兩把）。
+1. Worker → 設定 → 變數和密碼 → 新增兩個項目，**類型一定要選「密碼（Secret）」，不要選「變數（Variable）」**（變數會以明文顯示在後台）：`PASSCODE`、`APPS_SCRIPT_KEY`（值是步驟 0 的兩把）。名稱要完全一致。
 2. 編輯程式碼 → 把 `build\20261023\deploy\worker.js` 的**全部內容**貼上 → 部署。
    - 這個檔案已含你現有的 Apps Script 網址，**不要上傳到 GitHub**（GitHub 用的是 `repo\cloudflare-worker.js`，只有佔位網址）。
 3. 驗證（任意終端機）：
@@ -36,12 +36,12 @@
 ## 4. 手機實測（你的 iPhone）
 1. 完全關掉 App 再開（桌面圖示版要上滑關閉）；若版本標籤還是 v3.1.0，等 2 分鐘或清除 Safari 網站資料再開。**版本標籤要顯示 v3.2.0 才是新頁面。**
 2. 出現通行碼視窗 → 輸入通行碼 → 資料應正常載入。
-3. 新增一筆測試加油紀錄，確認成功；到試算表看有沒有那一列；再用「撤銷」收回。
+3. 新增一筆測試加油紀錄，確認成功；到試算表看有沒有那一列；**前端沒有撤銷功能，測試完請到試算表把那一列手動刪掉**。
 4. 按「更換通行碼」輸入一個**錯誤**的通行碼 → 應提示「通行碼不正確」並再問一次（不會一直自動重試）；再輸入正確的。
 5. 以上都正常才進行步驟 5。
 
 ## 5. 鎖門（設定內部金鑰）
-1. Apps Script → 專案設定（齒輪）→ **指令碼屬性** → 新增：`API_KEY` = `APPS_SCRIPT_KEY` 的同一個值 → 儲存。
+1. Apps Script → 專案設定（齒輪）→ **指令碼屬性** → 新增：名稱必須是 `API_KEY`（不是 `APPS_SCRIPT_KEY`），值 = Cloudflare `APPS_SCRIPT_KEY` 的同一個值 → 儲存。
 2. 驗證（這一步也同時證明金鑰經過 Apps Script 的轉址後仍然有效）：
    - `curl "你的/exec網址?action=all"` → 應回 `{"ok":false,"error":"unauthorized"}`（**舊網址從此失效**）。
    - `curl "https://你的worker網址/?action=all"` → 401。
